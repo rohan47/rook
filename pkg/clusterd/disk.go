@@ -48,6 +48,10 @@ func DiscoverDevices(executor exec.Executor) ([]*sys.LocalDisk, error) {
 		return nil, err
 	}
 
+	devices = append(devices, "/mnt/example-pvc")
+	devices = append(devices, "/mnt/example-pvc1")
+	devices = append(devices, "/mnt/example-pvc4")
+
 	for _, d := range devices {
 
 		if ignoreDevice(d) {
@@ -60,6 +64,7 @@ func DiscoverDevices(executor exec.Executor) ([]*sys.LocalDisk, error) {
 			logger.Warningf("skipping device %s: %+v", d, err)
 			continue
 		}
+		logger.Infof("######### %v", diskProps)
 
 		diskType, ok := diskProps["TYPE"]
 		if !ok || (diskType != sys.SSDType && diskType != sys.CryptType && diskType != sys.DiskType && diskType != sys.PartType && diskType != sys.LinearType) {
@@ -82,11 +87,11 @@ func DiscoverDevices(executor exec.Executor) ([]*sys.LocalDisk, error) {
 			}
 		}
 
-		udevInfo, err := sys.GetUdevInfo(d, executor)
+		/* udevInfo, err := sys.GetUdevInfo(d, executor)
 		if err != nil {
 			logger.Warningf("failed to get udev info for device %s: %+v", d, err)
 			continue
-		}
+		} */
 
 		disk := &sys.LocalDisk{Name: d, UUID: diskUUID}
 
@@ -112,7 +117,7 @@ func DiscoverDevices(executor exec.Executor) ([]*sys.LocalDisk, error) {
 			disk.Parent = val
 		}
 
-		// parse udev info output
+		/* // parse udev info output
 		if val, ok := udevInfo["DEVLINKS"]; ok {
 			disk.DevLinks = val
 		}
@@ -137,7 +142,7 @@ func DiscoverDevices(executor exec.Executor) ([]*sys.LocalDisk, error) {
 
 		if val, ok := udevInfo["ID_WWN"]; ok {
 			disk.WWN = val
-		}
+		} */
 
 		disks = append(disks, disk)
 	}

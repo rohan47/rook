@@ -131,6 +131,17 @@ type OrchestrationStatus struct {
 	Message string    `json:"message"`
 }
 
+type OSDObject struct {
+	name           string
+	devices        []rookalpha.Device
+	pvc            v1.PersistentVolumeClaimVolumeSource
+	selection      rookalpha.Selection
+	resources      v1.ResourceRequirements
+	storeConfig    osdconfig.StoreConfig
+	metadataDevice string
+	location       string
+}
+
 // Start the osd management
 func (c *Cluster) Start() error {
 	// Validate pod's memory if specified
@@ -142,7 +153,7 @@ func (c *Cluster) Start() error {
 
 	logger.Infof("start running osds in namespace %s", c.Namespace)
 
-	if c.DesiredStorage.UseAllNodes == false && len(c.DesiredStorage.Nodes) == 0 {
+	if c.DesiredStorage.UseAllNodes == false && len(c.DesiredStorage.Nodes) == 0 && len(c.DesiredStorage.PersistentVolumeClaim) == 0 {
 		logger.Warningf("useAllNodes is set to false and no nodes are specified, no OSD pods are going to be created")
 	}
 
@@ -166,7 +177,7 @@ func (c *Cluster) Start() error {
 	validNodes := k8sutil.GetValidNodes(c.DesiredStorage, c.context.Clientset, c.placement)
 
 	// no valid node is ready to run an osd
-	if len(validNodes) == 0 {
+	if len(validNodes) == 0 && len(c.DesiredStorage.PersistentVolumeClaim) == 0 {
 		logger.Warningf("no valid node available to run an osd in namespace %s. "+
 			"Rook will not create any new OSD nodes and will skip checking for removed nodes since "+
 			"removing all OSD nodes without destroying the Rook cluster is unlikely to be intentional", c.Namespace)
@@ -231,6 +242,22 @@ func (c *Cluster) startProvisioning(config *provisionConfig) {
 		return
 	}
 
+	for _, pvc := range c.DesiredStorage.PersistentVolumeClaim {
+		osdObject := OSDObject{
+			name: pvc.ClaimName,
+			pvc:  pvc,
+		}
+		job, err := c.makeJob(osdObject)
+		if err != nil {
+			logger.Errorf("failed to create prepare job node %s: %v", pvc.ClaimName, err)
+		}
+
+		if !c.runJob(job, pvc.ClaimName, config, "provision") {
+			logger.Errorf("failed to update node status. %+v", pvc.ClaimName)
+		}
+
+	}
+
 	// start with nodes currently in the storage spec
 	for _, node := range c.ValidStorage.Nodes {
 		// fully resolve the storage config and resources for this node
@@ -255,7 +282,16 @@ func (c *Cluster) startProvisioning(config *provisionConfig) {
 		// create the job that prepares osds on the node
 		storeConfig := osdconfig.ToStoreConfig(n.Config)
 		metadataDevice := osdconfig.MetadataDevice(n.Config)
-		job, err := c.makeJob(n.Name, n.Devices, n.Selection, n.Resources, storeConfig, metadataDevice, n.Location)
+		osdObject := OSDObject{
+			name:           n.Name,
+			devices:        n.Devices,
+			selection:      n.Selection,
+			resources:      n.Resources,
+			storeConfig:    storeConfig,
+			metadataDevice: metadataDevice,
+			location:       n.Location,
+		}
+		job, err := c.makeJob(osdObject)
 		if err != nil {
 			message := fmt.Sprintf("failed to create prepare job node %s: %v", n.Name, err)
 			config.addError(message)
@@ -273,6 +309,7 @@ func (c *Cluster) startProvisioning(config *provisionConfig) {
 			}
 		}
 	}
+
 }
 
 func (c *Cluster) runJob(job *batch.Job, nodeName string, config *provisionConfig, action string) bool {
@@ -410,8 +447,14 @@ func (c *Cluster) cleanupRemovedNode(config *provisionConfig, nodeName, crushNam
 
 	// trigger orchestration on the removed node by telling it not to use any storage at all.  note that the directories are still passed in
 	// so that the pod will be able to mount them and migrate data from them.
-	job, err := c.makeJob(nodeName, []rookalpha.Device{}, rookalpha.Selection{DeviceFilter: "none"},
-		v1.ResourceRequirements{}, osdconfig.StoreConfig{}, "", "")
+	osdObject := OSDObject{
+		name:        nodeName,
+		devices:     []rookalpha.Device{},
+		selection:   rookalpha.Selection{DeviceFilter: "none"},
+		resources:   v1.ResourceRequirements{},
+		storeConfig: osdconfig.StoreConfig{},
+	}
+	job, err := c.makeJob(osdObject)
 	if err != nil {
 		message := fmt.Sprintf("failed to create prepare job node %s: %v", nodeName, err)
 		config.addError(message)
