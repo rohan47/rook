@@ -58,12 +58,53 @@ func (a *OsdAgent) configureCVDevices(context *clusterd.Context, devices *Device
 		return nil, fmt.Errorf("failed to generate osd keyring. %+v", err)
 	}
 
-	if err = a.initializeDevices(context, devices); err != nil {
+	if err = a.initializeBlockPVC(context); err != nil {
 		return nil, fmt.Errorf("failed to initialize devices. %+v", err)
 	}
 
+	/* if err = a.initializeDevices(context, devices); err != nil {
+		return nil, fmt.Errorf("failed to initialize devices. %+v", err)
+	} */
+
 	osds, err = getCephVolumeOSDs(context, a.cluster.Name, a.cluster.FSID)
 	return osds, err
+}
+
+func (a *OsdAgent) initializeBlockPVC(context *clusterd.Context) error {
+	if err := sedChanges(context); err != nil {
+		return fmt.Errorf("sed failure, %+v", err) // fail return here as validation provided by ceph-volume
+	}
+	baseCommand := "stdbuf"
+	baseArgs := []string{"-oL", cephVolumeCmd, "lvm", "prepare", "--data", "/mnt/example-pvc", "--no-systemd"}
+	if err := context.Executor.ExecuteCommand(false, "", baseCommand, baseArgs...); err != nil {
+		return fmt.Errorf("failed ceph-volume. %+v", err) // fail return here as validation provided by ceph-volume
+	}
+	return nil
+}
+
+func sedChanges(context *clusterd.Context) error {
+	testArgs := []string{"-oL", "sed", "-i", "-e", "s#udev_sync = 1#udev_sync = 0#", "/etc/lvm/lvm.conf"}
+	if err := context.Executor.ExecuteCommand(false, "", "stdbuf", testArgs...); err != nil {
+		return fmt.Errorf("failed ceph-volume. %+v", err) // fail return here as validation provided by ceph-volume
+	}
+	testArgs = []string{"-oL", "sed", "-i", "-e", "s#udev_rules = 1#udev_rules = 0#", "/etc/lvm/lvm.conf"}
+	if err := context.Executor.ExecuteCommand(false, "", "stdbuf", testArgs...); err != nil {
+		return fmt.Errorf("failed ceph-volume. %+v", err) // fail return here as validation provided by ceph-volume
+	}
+	testArgs = []string{"-oL", "sed", "-i", "-e", "s#use_lvmetad = 1#use_lvmetad = 0#", "/etc/lvm/lvm.conf"}
+	if err := context.Executor.ExecuteCommand(false, "", "stdbuf", testArgs...); err != nil {
+		return fmt.Errorf("failed ceph-volume. %+v", err) // fail return here as validation provided by ceph-volume
+	}
+	testArgs = []string{"-oL", "sed", "-i", "-e", "s#scan = \\[ \"/dev\" \\]#scan = [ \"/dev\", \"/mnt\" ]#", "/etc/lvm/lvm.conf"}
+	if err := context.Executor.ExecuteCommand(false, "", "stdbuf", testArgs...); err != nil {
+		return fmt.Errorf("failed ceph-volume. %+v", err) // fail return here as validation provided by ceph-volume
+	}
+	testArgs = []string{"-oL", "sed", "-i", "-e", "0,/# filter =.*/{s%# filter =.*% filter = [ \"a|^/mnt/.*| r|.*/|\" ]%}", "/etc/lvm/lvm.conf"}
+	if err := context.Executor.ExecuteCommand(false, "", "stdbuf", testArgs...); err != nil {
+		return fmt.Errorf("failed ceph-volume. %+v", err) // fail return here as validation provided by ceph-volume
+	}
+
+	return nil
 }
 
 func (a *OsdAgent) initializeDevices(context *clusterd.Context, devices *DeviceOsdMapping) error {
@@ -195,7 +236,7 @@ func sanitizeOSDsPerDevice(count int) string {
 }
 
 func getCephVolumeSupported(context *clusterd.Context) (bool, error) {
-	_, err := context.Executor.ExecuteCommandWithOutput(false, "", cephVolumeCmd, "lvm", "batch", "--prepare")
+	_, err := context.Executor.ExecuteCommandWithOutput(false, "", cephVolumeCmd, "lvm", "prepare")
 	if err != nil {
 		if cmdErr, ok := err.(*exec.CommandError); ok {
 			exitStatus := cmdErr.ExitStatus()

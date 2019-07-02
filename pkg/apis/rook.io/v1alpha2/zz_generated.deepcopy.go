@@ -368,6 +368,11 @@ func (in *StorageScopeSpec) DeepCopyInto(out *StorageScopeSpec) {
 		}
 	}
 	in.Selection.DeepCopyInto(&out.Selection)
+	if in.PersistentVolumeClaim != nil {
+		in, out := &in.PersistentVolumeClaim, &out.PersistentVolumeClaim
+		*out = make([]v1.PersistentVolumeClaimVolumeSource, len(*in))
+		copy(*out, *in)
+	}
 	return
 }
 
