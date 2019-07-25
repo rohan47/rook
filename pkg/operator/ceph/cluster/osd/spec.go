@@ -84,8 +84,7 @@ func (c *Cluster) makeJob(osdObject OSDObject) (*batch.Job, error) {
 	return job, nil
 }
 
-func (c *Cluster) makeDeployment(nodeName string, selection rookalpha.Selection, resources v1.ResourceRequirements,
-	storeConfig config.StoreConfig, metadataDevice, location string, osd OSDInfo) (*apps.Deployment, error) {
+func (c *Cluster) makeDeployment(osdObject OSDObject, osd OSDInfo) (*apps.Deployment, error) {
 
 	replicaCount := int32(1)
 	volumeMounts := opspec.CephVolumeMounts()
@@ -107,21 +106,6 @@ func (c *Cluster) makeDeployment(nodeName string, selection rookalpha.Selection,
 			configVolumeMounts = append(configVolumeMounts, v1.VolumeMount{Name: volumeName, MountPath: parentDir})
 			volumeMounts = append(volumeMounts, v1.VolumeMount{Name: volumeName, MountPath: parentDir})
 		}
-		/* } else if len(c.DesiredStorage.PersistentVolumeClaim) != 0 {
-		dataDir = k8sutil.DataDir
-
-		// Create volume config for PVCs
-		devVolume := v1.Volume{
-			Name: c.DesiredStorage.PersistentVolumeClaim.ClaimName,
-			VolumeSource: v1.VolumeSource{
-				PersistentVolumeClaim: &v1.PersistentVolumeClaimVolumeSource{
-					ClaimName: c.DesiredStorage.PersistentVolumeClaim.ClaimName,
-				},
-			},
-		}
-		volumes = append(volumes, devVolume)
-		devMount := v1.VolumeMount{Name: c.DesiredStorage.PersistentVolumeClaim.ClaimName, MountPath: "/dev"}
-		volumeMounts = append(volumeMounts, devMount) */
 	} else {
 		dataDir = k8sutil.DataDir
 
@@ -130,6 +114,26 @@ func (c *Cluster) makeDeployment(nodeName string, selection rookalpha.Selection,
 		volumes = append(volumes, devVolume)
 		devMount := v1.VolumeMount{Name: "devices", MountPath: "/dev"}
 		volumeMounts = append(volumeMounts, devMount)
+	}
+
+	if osdObject.pvc.ClaimName != "" {
+		// Create volume config for PVCs
+		devVolume := v1.Volume{
+			Name: osdObject.name,
+			VolumeSource: v1.VolumeSource{
+				PersistentVolumeClaim: &osdObject.pvc,
+			},
+		}
+		volumes = append(volumes, devVolume)
+		devVolume = v1.Volume{
+			Name: "blkdevbridge",
+			VolumeSource: v1.VolumeSource{
+				EmptyDir: &v1.EmptyDirVolumeSource{
+					Medium: "Memory",
+				},
+			},
+		}
+		volumes = append(volumes, devVolume)
 	}
 
 	if len(volumes) == 0 {
@@ -144,7 +148,7 @@ func (c *Cluster) makeDeployment(nodeName string, selection rookalpha.Selection,
 	osdID := strconv.Itoa(osd.ID)
 	tiniEnvVar := v1.EnvVar{Name: "TINI_SUBREAPER", Value: ""}
 	envVars := []v1.EnvVar{
-		nodeNameEnvVar(nodeName),
+		nodeNameEnvVar(osdObject.name),
 		k8sutil.PodIPEnvVar(k8sutil.PrivateIPEnvVar),
 		k8sutil.PodIPEnvVar(k8sutil.PublicIPEnvVar),
 		tiniEnvVar,
@@ -155,7 +159,7 @@ func (c *Cluster) makeDeployment(nodeName string, selection rookalpha.Selection,
 		{Name: "ROOK_OSD_ID", Value: osdID},
 		{Name: "ROOK_OSD_STORE_TYPE", Value: storeType},
 	}...)
-	configEnvVars := append(c.getConfigEnvVars(storeConfig, dataDir, nodeName, location), []v1.EnvVar{
+	configEnvVars := append(c.getConfigEnvVars(osdObject.storeConfig, dataDir, osdObject.name, osdObject.location), []v1.EnvVar{
 		tiniEnvVar,
 		{Name: "ROOK_OSD_ID", Value: osdID},
 		{Name: "ROOK_CEPH_VERSION", Value: c.clusterInfo.CephVersion.CephVersionFormatted()},
@@ -268,6 +272,11 @@ func (c *Cluster) makeDeployment(nodeName string, selection rookalpha.Selection,
 		args = commonArgs
 	}
 
+	if osdObject.pvc.ClaimName != "" {
+		devMount := v1.VolumeMount{Name: "blkdevbridge", MountPath: "/mnt"}
+		volumeMounts = append(volumeMounts, devMount)
+	}
+
 	privileged := true
 	runAsUser := int64(0)
 	readOnlyRootFilesystem := false
@@ -278,7 +287,7 @@ func (c *Cluster) makeDeployment(nodeName string, selection rookalpha.Selection,
 	}
 
 	// needed for luksOpen synchronization when devices are encrypted
-	hostIPC := storeConfig.EncryptedDevice
+	hostIPC := osdObject.storeConfig.EncryptedDevice
 
 	DNSPolicy := v1.DNSClusterFirst
 	if c.HostNetwork {
@@ -316,7 +325,7 @@ func (c *Cluster) makeDeployment(nodeName string, selection rookalpha.Selection,
 					},
 				},
 				Spec: v1.PodSpec{
-					NodeSelector:       map[string]string{v1.LabelHostname: nodeName},
+					NodeSelector:       map[string]string{v1.LabelHostname: osdObject.name},
 					RestartPolicy:      v1.RestartPolicyAlways,
 					ServiceAccountName: serviceAccountName,
 					HostNetwork:        c.HostNetwork,
@@ -333,6 +342,7 @@ func (c *Cluster) makeDeployment(nodeName string, selection rookalpha.Selection,
 							SecurityContext: securityContext,
 						},
 						*copyBinariesContainer,
+						c.getInitContainers(osdObject.pvc),
 					},
 					Containers: []v1.Container{
 						{
@@ -342,7 +352,7 @@ func (c *Cluster) makeDeployment(nodeName string, selection rookalpha.Selection,
 							Image:           c.cephVersion.Image,
 							VolumeMounts:    volumeMounts,
 							Env:             envVars,
-							Resources:       resources,
+							Resources:       osdObject.resources,
 							SecurityContext: securityContext,
 							Lifecycle:       opspec.PodLifeCycle(osd.DataPath),
 						},
@@ -352,6 +362,11 @@ func (c *Cluster) makeDeployment(nodeName string, selection rookalpha.Selection,
 			},
 			Replicas: &replicaCount,
 		},
+	}
+	if osdObject.pvc.ClaimName == "" {
+		deployment.Spec.Template.Spec.NodeSelector = map[string]string{v1.LabelHostname: osdObject.name}
+	} else {
+		deployment.Spec.Template.Spec.NodeSelector = map[string]string{}
 	}
 	k8sutil.AddRookVersionLabelToDeployment(deployment)
 	c.annotations.ApplyToObjectMeta(&deployment.ObjectMeta)
@@ -637,17 +652,6 @@ func (c *Cluster) provisionOSDContainer(osdObject OSDObject, copyBinariesMount v
 		Resources: osdObject.resources,
 	}
 
-	/* if osdObject.pvc.ClaimName != "" {
-		osdProvisionContainer.VolumeDevices = []v1.VolumeDevice{
-			{
-				Name:       osdObject.name,
-				DevicePath: fmt.Sprintf("/dev/%s", osdObject.name),
-			},
-		}
-		envVars = append(envVars, dataDevicesEnvVar(strings.Join([]string{osdObject.pvc.ClaimName}, ",")))
-		osdProvisionContainer.Env = envVars
-	}
-	*/
 	return osdProvisionContainer
 }
 

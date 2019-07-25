@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/coreos/pkg/capnslog"
 	cephv1 "github.com/rook/rook/pkg/apis/ceph.rook.io/v1"
@@ -191,14 +192,14 @@ func (c *Cluster) Start() error {
 	config := newProvisionConfig()
 	logger.Infof("start provisioning the osds on nodes, if needed")
 	c.startProvisioning(config)
-
+	time.Sleep(60 * time.Second)
 	// start the OSD pods, waiting for the provisioning to be completed
 	logger.Infof("start osds after provisioning is completed, if needed")
 	c.completeProvision(config)
 
 	// handle the removed nodes and rebalance the PGs
-	logger.Infof("checking if any nodes were removed")
-	c.handleRemovedNodes(config)
+	// logger.Infof("checking if any nodes were removed")
+	// c.handleRemovedNodes(config)
 
 	if len(config.errorMessages) > 0 {
 		return fmt.Errorf("%d failures encountered while running osds in namespace %s: %+v",
@@ -328,6 +329,47 @@ func (c *Cluster) runJob(job *batch.Job, nodeName string, config *provisionConfi
 	return true
 }
 
+func (c *Cluster) startOSDDaemonsOnPVC(pvcName string, config *provisionConfig, configMap *v1.ConfigMap, status *OrchestrationStatus) {
+
+	osds := status.OSDs
+	logger.Infof("starting %d osd daemons on node %s", len(osds), pvcName)
+	conf := make(map[string]string)
+	storeConfig := osdconfig.ToStoreConfig(conf)
+	osdObject := OSDObject{
+		name: "example-pvc",
+		pvc: v1.PersistentVolumeClaimVolumeSource{
+			ClaimName: "example-pvc",
+		},
+	}
+
+	// start osds
+	for _, osd := range osds {
+		logger.Debugf("start osd %v", osd)
+		dp, err := c.makeDeployment(osdObject, osd)
+		if err != nil {
+			errMsg := fmt.Sprintf("failed to create deployment for node %s: %v", osdObject.name, err)
+			config.addError(errMsg)
+			continue
+		}
+
+		_, err = c.context.Clientset.AppsV1().Deployments(c.Namespace).Create(dp)
+		if err != nil {
+			if !errors.IsAlreadyExists(err) {
+				// we failed to create job, update the orchestration status for this node
+				logger.Warningf("failed to create osd deployment for node %s, osd %v: %+v", osdObject.name, osd, err)
+				continue
+			}
+			logger.Infof("deployment for osd %d already exists. updating if needed", osd.ID)
+			if _, err = k8sutil.UpdateDeploymentAndWait(c.context, dp, c.Namespace); err != nil {
+				config.addError(fmt.Sprintf("failed to update osd deployment %d. %+v", osd.ID, err))
+			}
+		}
+
+		logger.Infof("started deployment for osd %d (dir=%t, type=%s)", osd.ID, osd.IsDirectory, storeConfig.StoreType)
+	}
+}
+
+/*
 func (c *Cluster) startOSDDaemonsOnNode(nodeName string, config *provisionConfig, configMap *v1.ConfigMap, status *OrchestrationStatus) {
 
 	osds := status.OSDs
@@ -380,7 +422,7 @@ func (c *Cluster) startOSDDaemonsOnNode(nodeName string, config *provisionConfig
 		logger.Infof("started deployment for osd %d (dir=%t, type=%s)", osd.ID, osd.IsDirectory, storeConfig.StoreType)
 	}
 }
-
+*/
 func (c *Cluster) handleRemovedNodes(config *provisionConfig) {
 	// find all removed nodes (if any) and start orchestration to remove them from the cluster
 	removedNodes, err := c.findRemovedNodes()

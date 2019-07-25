@@ -48,9 +48,22 @@ func StartOSD(context *clusterd.Context, osdType, osdID, osdUUID string, cephArg
 		logger.Errorf("failed to create config dir %s. %+v", configDir, err)
 	}
 
+	if err := sedChanges(context); err != nil {
+		return fmt.Errorf("sed failure, %+v", err) // fail return here as validation provided by ceph-volume
+	}
+
+	if err := context.Executor.ExecuteCommand(false, "", "stdbuf", "-oL", "/sbin/vgchange", "-an"); err != nil {
+		return fmt.Errorf("failed to activate osd. %+v", err)
+	}
+
+	if err := context.Executor.ExecuteCommand(false, "", "stdbuf", "-oL", "/sbin/vgchange", "-ay"); err != nil {
+		return fmt.Errorf("failed to activate osd. %+v", err)
+	}
+
 	// activate the osd with ceph-volume
 	storeFlag := "--" + osdType
 	if err := context.Executor.ExecuteCommand(false, "", "stdbuf", "-oL", "ceph-volume", "lvm", "activate", "--no-systemd", storeFlag, osdID, osdUUID); err != nil {
+		//time.Sleep(5 * time.Minute)
 		return fmt.Errorf("failed to activate osd. %+v", err)
 	}
 
