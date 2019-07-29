@@ -56,6 +56,7 @@ type OsdAgent struct {
 	procMan        *proc.ProcManager
 	storeConfig    config.StoreConfig
 	kv             *k8sutil.ConfigMapKVStore
+	pvcBacked      bool
 	configCounter  int32
 	osdsCompleted  chan struct{}
 }
@@ -66,7 +67,7 @@ type device struct {
 }
 
 func NewAgent(context *clusterd.Context, devices []DesiredDevice, metadataDevice, directories string, forceFormat bool,
-	location string, storeConfig config.StoreConfig, cluster *cephconfig.ClusterInfo, nodeName string, kv *k8sutil.ConfigMapKVStore) *OsdAgent {
+	location string, storeConfig config.StoreConfig, cluster *cephconfig.ClusterInfo, nodeName string, kv *k8sutil.ConfigMapKVStore, pvcBacked bool) *OsdAgent {
 
 	return &OsdAgent{
 		devices:        devices,
@@ -78,6 +79,7 @@ func NewAgent(context *clusterd.Context, devices []DesiredDevice, metadataDevice
 		cluster:        cluster,
 		nodeName:       nodeName,
 		kv:             kv,
+		pvcBacked:      pvcBacked,
 		procMan:        proc.New(context.Executor),
 		osdProc:        make(map[int]*proc.MonitoredProc),
 	}

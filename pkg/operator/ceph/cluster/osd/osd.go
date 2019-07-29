@@ -21,7 +21,6 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/coreos/pkg/capnslog"
 	cephv1 "github.com/rook/rook/pkg/apis/ceph.rook.io/v1"
@@ -127,9 +126,10 @@ type OSDInfo struct {
 }
 
 type OrchestrationStatus struct {
-	OSDs    []OSDInfo `json:"osds"`
-	Status  string    `json:"status"`
-	Message string    `json:"message"`
+	OSDs         []OSDInfo `json:"osds"`
+	Status       string    `json:"status"`
+	PvcBackedOSD bool      `json:"pvc-backed-osd"`
+	Message      string    `json:"message"`
 }
 
 type OSDObject struct {
@@ -158,48 +158,53 @@ func (c *Cluster) Start() error {
 		logger.Warningf("useAllNodes is set to false and no nodes are specified, no OSD pods are going to be created")
 	}
 
-	if c.DesiredStorage.UseAllNodes {
-		// Get the list of all nodes in the cluster. The placement settings will be applied below.
-		hostnameMap, err := k8sutil.GetNodeHostNames(c.context.Clientset)
-		if err != nil {
-			logger.Warningf("failed to get node hostnames: %v", err)
-			return err
-		}
-		c.DesiredStorage.Nodes = nil
-		for _, hostname := range hostnameMap {
-			storageNode := rookalpha.Node{
-				Name: hostname,
+	if len(c.DesiredStorage.PersistentVolumeClaim) == 0 {
+		if c.DesiredStorage.UseAllNodes {
+			// Get the list of all nodes in the cluster. The placement settings will be applied below.
+			hostnameMap, err := k8sutil.GetNodeHostNames(c.context.Clientset)
+			if err != nil {
+				logger.Warningf("failed to get node hostnames: %v", err)
+				return err
 			}
-			c.DesiredStorage.Nodes = append(c.DesiredStorage.Nodes, storageNode)
+			c.DesiredStorage.Nodes = nil
+			for _, hostname := range hostnameMap {
+				storageNode := rookalpha.Node{
+					Name: hostname,
+				}
+				c.DesiredStorage.Nodes = append(c.DesiredStorage.Nodes, storageNode)
+			}
+			logger.Debugf("storage nodes: %+v", c.DesiredStorage.Nodes)
 		}
-		logger.Debugf("storage nodes: %+v", c.DesiredStorage.Nodes)
-	}
-	// generally speaking, this finds nodes which are capable of running new osds
-	validNodes := k8sutil.GetValidNodes(c.DesiredStorage, c.context.Clientset, c.placement)
+		// generally speaking, this finds nodes which are capable of running new osds
+		validNodes := k8sutil.GetValidNodes(c.DesiredStorage, c.context.Clientset, c.placement)
 
-	// no valid node is ready to run an osd
-	if len(validNodes) == 0 && len(c.DesiredStorage.PersistentVolumeClaim) == 0 {
-		logger.Warningf("no valid node available to run an osd in namespace %s. "+
-			"Rook will not create any new OSD nodes and will skip checking for removed nodes since "+
-			"removing all OSD nodes without destroying the Rook cluster is unlikely to be intentional", c.Namespace)
-		return nil
+		// no valid node is ready to run an osd
+		if len(validNodes) == 0 && len(c.DesiredStorage.PersistentVolumeClaim) == 0 {
+			logger.Warningf("no valid node available to run an osd in namespace %s. "+
+				"Rook will not create any new OSD nodes and will skip checking for removed nodes since "+
+				"removing all OSD nodes without destroying the Rook cluster is unlikely to be intentional", c.Namespace)
+			return nil
+		}
+		logger.Infof("%d of the %d storage nodes are valid", len(validNodes), len(c.DesiredStorage.Nodes))
+		c.ValidStorage = *c.DesiredStorage.DeepCopy()
+		c.ValidStorage.Nodes = validNodes
+	} else {
+		c.ValidStorage.Nodes = nil
 	}
-	logger.Infof("%d of the %d storage nodes are valid", len(validNodes), len(c.DesiredStorage.Nodes))
-	c.ValidStorage = *c.DesiredStorage.DeepCopy()
-	c.ValidStorage.Nodes = validNodes
 
 	// start the jobs to provision the OSD devices and directories
 	config := newProvisionConfig()
 	logger.Infof("start provisioning the osds on nodes, if needed")
 	c.startProvisioning(config)
-	time.Sleep(60 * time.Second)
 	// start the OSD pods, waiting for the provisioning to be completed
 	logger.Infof("start osds after provisioning is completed, if needed")
 	c.completeProvision(config)
 
 	// handle the removed nodes and rebalance the PGs
-	// logger.Infof("checking if any nodes were removed")
-	// c.handleRemovedNodes(config)
+	if len(c.DesiredStorage.PersistentVolumeClaim) == 0 {
+		logger.Infof("checking if any nodes were removed")
+		c.handleRemovedNodes(config)
+	}
 
 	if len(config.errorMessages) > 0 {
 		return fmt.Errorf("%d failures encountered while running osds in namespace %s: %+v",
@@ -248,13 +253,35 @@ func (c *Cluster) startProvisioning(config *provisionConfig) {
 			name: pvc.ClaimName,
 			pvc:  pvc,
 		}
-		job, err := c.makeJob(osdObject)
-		if err != nil {
-			logger.Errorf("failed to create prepare job node %s: %v", pvc.ClaimName, err)
+
+		// update the orchestration status of this pvc to the starting state
+		status := OrchestrationStatus{Status: OrchestrationStatusStarting, PvcBackedOSD: true}
+		if err := c.updateNodeStatus(osdObject.name, status); err != nil {
+			config.addError("failed to set orchestration starting status for pvc %s: %+v", osdObject.name, err)
+			continue
 		}
 
-		if !c.runJob(job, pvc.ClaimName, config, "provision") {
-			logger.Errorf("failed to update node status. %+v", pvc.ClaimName)
+		job, err := c.makeJob(osdObject)
+		if err != nil {
+			message := fmt.Sprintf("failed to create prepare job for pvc %s: %v", osdObject.name, err)
+			config.addError(message)
+			status := OrchestrationStatus{Status: OrchestrationStatusCompleted, Message: message, PvcBackedOSD: true}
+			if err := c.updateNodeStatus(osdObject.name, status); err != nil {
+				config.addError("failed to update pvc %s status. %+v", osdObject.name, err)
+				continue
+			}
+		}
+
+		if _, err := c.context.Clientset.BatchV1().Jobs(job.Namespace).Create(job); err != nil {
+			//if !c.runJob(job, pvc.ClaimName, config, "provision") {
+			status := OrchestrationStatus{
+				Status:       OrchestrationStatusCompleted,
+				Message:      fmt.Sprintf("failed to start osd provisioning on pvc %s", osdObject.name),
+				PvcBackedOSD: true,
+			}
+			if err := c.updateNodeStatus(osdObject.name, status); err != nil {
+				config.addError("failed to update pvc %s status. %+v", osdObject.name, err)
+			}
 		}
 
 	}
@@ -336,9 +363,9 @@ func (c *Cluster) startOSDDaemonsOnPVC(pvcName string, config *provisionConfig, 
 	conf := make(map[string]string)
 	storeConfig := osdconfig.ToStoreConfig(conf)
 	osdObject := OSDObject{
-		name: "example-pvc",
+		name: pvcName,
 		pvc: v1.PersistentVolumeClaimVolumeSource{
-			ClaimName: "example-pvc",
+			ClaimName: pvcName,
 		},
 	}
 
@@ -360,16 +387,26 @@ func (c *Cluster) startOSDDaemonsOnPVC(pvcName string, config *provisionConfig, 
 				continue
 			}
 			logger.Infof("deployment for osd %d already exists. updating if needed", osd.ID)
-			if _, err = k8sutil.UpdateDeploymentAndWait(c.context, dp, c.Namespace); err != nil {
+			// Always invoke ceph version before an upgrade so we are sure to be up-to-date
+			daemon := string(opconfig.OsdType)
+			var cephVersionToUse cephver.CephVersion
+			currentCephVersion, err := client.LeastUptodateDaemonVersion(c.context, c.clusterInfo.Name, daemon)
+			if err != nil {
+				logger.Warningf("failed to retrieve current ceph %s version. %+v", daemon, err)
+				logger.Debug("could not detect ceph version during update, this is likely an initial bootstrap, proceeding with c.clusterInfo.CephVersion")
+				cephVersionToUse = c.clusterInfo.CephVersion
+			} else {
+				logger.Debugf("current cluster version for osds before upgrading is: %+v", currentCephVersion)
+				cephVersionToUse = currentCephVersion
+			}
+			if err = updateDeploymentAndWait(c.context, dp, c.Namespace, daemon, strconv.Itoa(osd.ID), cephVersionToUse); err != nil {
 				config.addError(fmt.Sprintf("failed to update osd deployment %d. %+v", osd.ID, err))
 			}
 		}
-
 		logger.Infof("started deployment for osd %d (dir=%t, type=%s)", osd.ID, osd.IsDirectory, storeConfig.StoreType)
 	}
 }
 
-/*
 func (c *Cluster) startOSDDaemonsOnNode(nodeName string, config *provisionConfig, configMap *v1.ConfigMap, status *OrchestrationStatus) {
 
 	osds := status.OSDs
@@ -381,14 +418,23 @@ func (c *Cluster) startOSDDaemonsOnNode(nodeName string, config *provisionConfig
 		config.addError("node %s did not resolve to start osds", nodeName)
 		return
 	}
-
 	storeConfig := osdconfig.ToStoreConfig(n.Config)
 	metadataDevice := osdconfig.MetadataDevice(n.Config)
+
+	osdObject := OSDObject{
+		name:           n.Name,
+		devices:        n.Devices,
+		selection:      n.Selection,
+		resources:      n.Resources,
+		storeConfig:    storeConfig,
+		metadataDevice: metadataDevice,
+		location:       n.Location,
+	}
 
 	// start osds
 	for _, osd := range osds {
 		logger.Debugf("start osd %v", osd)
-		dp, err := c.makeDeployment(n.Name, n.Selection, n.Resources, storeConfig, metadataDevice, n.Location, osd)
+		dp, err := c.makeDeployment(osdObject, osd)
 		if err != nil {
 			errMsg := fmt.Sprintf("failed to create deployment for node %s: %v", n.Name, err)
 			config.addError(errMsg)
@@ -422,7 +468,7 @@ func (c *Cluster) startOSDDaemonsOnNode(nodeName string, config *provisionConfig
 		logger.Infof("started deployment for osd %d (dir=%t, type=%s)", osd.ID, osd.IsDirectory, storeConfig.StoreType)
 	}
 }
-*/
+
 func (c *Cluster) handleRemovedNodes(config *provisionConfig) {
 	// find all removed nodes (if any) and start orchestration to remove them from the cluster
 	removedNodes, err := c.findRemovedNodes()

@@ -47,6 +47,7 @@ const (
 	osdsPerDeviceEnvVarName             = "ROOK_OSDS_PER_DEVICE"
 	encryptedDeviceEnvVarName           = "ROOK_ENCRYPTED_DEVICE"
 	osdMetadataDeviceEnvVarName         = "ROOK_METADATA_DEVICE"
+	pvcBackedOSDVarName                 = "ROOK_PVC_BACKED_OSD"
 	rookBinariesMountPath               = "/rook"
 	rookBinariesVolumeName              = "rook-binaries"
 	osdMemoryTargetSafetyFactor float32 = 0.8
@@ -63,6 +64,9 @@ func (c *Cluster) makeJob(osdObject OSDObject) (*batch.Job, error) {
 		podSpec.Spec.NodeSelector = map[string]string{v1.LabelHostname: osdObject.name}
 	} else {
 		podSpec.Spec.NodeSelector = map[string]string{}
+		podSpec.Spec.InitContainers = []v1.Container{
+			c.getInitContainers(osdObject.pvc),
+		}
 	}
 
 	job := &batch.Job{
@@ -126,7 +130,7 @@ func (c *Cluster) makeDeployment(osdObject OSDObject, osd OSDInfo) (*apps.Deploy
 		}
 		volumes = append(volumes, devVolume)
 		devVolume = v1.Volume{
-			Name: "blkdevbridge",
+			Name: fmt.Sprintf("%s-bridge", osdObject.pvc.ClaimName),
 			VolumeSource: v1.VolumeSource{
 				EmptyDir: &v1.EmptyDirVolumeSource{
 					Medium: "Memory",
@@ -273,8 +277,9 @@ func (c *Cluster) makeDeployment(osdObject OSDObject, osd OSDInfo) (*apps.Deploy
 	}
 
 	if osdObject.pvc.ClaimName != "" {
-		devMount := v1.VolumeMount{Name: "blkdevbridge", MountPath: "/mnt"}
+		devMount := v1.VolumeMount{Name: fmt.Sprintf("%s-bridge", osdObject.pvc.ClaimName), MountPath: "/mnt"}
 		volumeMounts = append(volumeMounts, devMount)
+		envVars = append(envVars, pvcBackedOSDEnvVar("true"))
 	}
 
 	privileged := true
@@ -342,7 +347,6 @@ func (c *Cluster) makeDeployment(osdObject OSDObject, osd OSDInfo) (*apps.Deploy
 							SecurityContext: securityContext,
 						},
 						*copyBinariesContainer,
-						c.getInitContainers(osdObject.pvc),
 					},
 					Containers: []v1.Container{
 						{
@@ -367,6 +371,7 @@ func (c *Cluster) makeDeployment(osdObject OSDObject, osd OSDInfo) (*apps.Deploy
 		deployment.Spec.Template.Spec.NodeSelector = map[string]string{v1.LabelHostname: osdObject.name}
 	} else {
 		deployment.Spec.Template.Spec.NodeSelector = map[string]string{}
+		deployment.Spec.Template.Spec.InitContainers = append(deployment.Spec.Template.Spec.InitContainers, c.getInitContainers(osdObject.pvc))
 	}
 	k8sutil.AddRookVersionLabelToDeployment(deployment)
 	c.annotations.ApplyToObjectMeta(&deployment.ObjectMeta)
@@ -420,7 +425,7 @@ func (c *Cluster) provisionPodTemplateSpec(osdObject OSDObject, restart v1.Resta
 		}
 		volumes = append(volumes, devVolume)
 		devVolume = v1.Volume{
-			Name: "blkdevbridge",
+			Name: fmt.Sprintf("%s-bridge", osdObject.pvc.ClaimName),
 			VolumeSource: v1.VolumeSource{
 				EmptyDir: &v1.EmptyDirVolumeSource{
 					Medium: "Memory",
@@ -449,9 +454,6 @@ func (c *Cluster) provisionPodTemplateSpec(osdObject OSDObject, restart v1.Resta
 
 	podSpec := v1.PodSpec{
 		ServiceAccountName: serviceAccountName,
-		InitContainers: []v1.Container{
-			c.getInitContainers(osdObject.pvc),
-		},
 		Containers: []v1.Container{
 			*copyBinariesContainer,
 			c.provisionOSDContainer(osdObject, copyBinariesContainer.VolumeMounts[0]),
@@ -502,9 +504,10 @@ func (c *Cluster) getInitContainers(pvc v1.PersistentVolumeClaimVolumeSource) v1
 		VolumeMounts: []v1.VolumeMount{
 			{
 				MountPath: "/mnt",
-				Name:      "blkdevbridge",
+				Name:      fmt.Sprintf("%s-bridge", pvc.ClaimName),
 			},
 		},
+		SecurityContext: opmon.PodSecurityContext(),
 	}
 }
 
@@ -605,9 +608,10 @@ func (c *Cluster) provisionOSDContainer(osdObject OSDObject, copyBinariesMount v
 	}
 
 	if osdObject.pvc.ClaimName != "" {
-		devMount := v1.VolumeMount{Name: "blkdevbridge", MountPath: "/mnt"}
+		devMount := v1.VolumeMount{Name: fmt.Sprintf("%s-bridge", osdObject.pvc.ClaimName), MountPath: "/mnt"}
 		volumeMounts = append(volumeMounts, devMount)
 		envVars = append(envVars, dataDevicesEnvVar(strings.Join([]string{fmt.Sprintf("/mnt/%s", osdObject.pvc.ClaimName)}, ",")))
+		envVars = append(envVars, pvcBackedOSDEnvVar("true"))
 	}
 
 	if len(osdObject.selection.Directories) > 0 {
@@ -679,6 +683,10 @@ func metadataDeviceEnvVar(metadataDevice string) v1.EnvVar {
 
 func dataDirectoriesEnvVar(dataDirectories string) v1.EnvVar {
 	return v1.EnvVar{Name: dataDirsEnvVarName, Value: dataDirectories}
+}
+
+func pvcBackedOSDEnvVar(pvcBacked string) v1.EnvVar {
+	return v1.EnvVar{Name: pvcBackedOSDVarName, Value: pvcBacked}
 }
 
 func getDirectoriesFromContainer(osdContainer v1.Container) []rookalpha.Directory {
