@@ -39,7 +39,7 @@ var (
 )
 
 // StartOSD starts an OSD on a device that was provisioned by ceph-volume
-func StartOSD(context *clusterd.Context, osdType, osdID, osdUUID string, cephArgs []string) error {
+func StartOSD(context *clusterd.Context, osdType, osdID, osdUUID string, pvcBackedOSD bool, cephArgs []string) error {
 
 	// ensure the config mount point exists
 	configDir := fmt.Sprintf("/var/lib/ceph/osd/ceph-%s", osdID)
@@ -48,16 +48,14 @@ func StartOSD(context *clusterd.Context, osdType, osdID, osdUUID string, cephArg
 		logger.Errorf("failed to create config dir %s. %+v", configDir, err)
 	}
 
-	if err := sedChanges(context); err != nil {
-		return fmt.Errorf("sed failure, %+v", err) // fail return here as validation provided by ceph-volume
-	}
+	if pvcBackedOSD {
+		if err := sedChanges(context); err != nil {
+			return fmt.Errorf("sed failure, %+v", err) // fail return here as validation provided by ceph-volume
+		}
 
-	if err := context.Executor.ExecuteCommand(false, "", "stdbuf", "-oL", "/sbin/vgchange", "-an"); err != nil {
-		return fmt.Errorf("failed to activate osd. %+v", err)
-	}
+		context.Executor.ExecuteCommand(false, "", "stdbuf", "-oL", "/sbin/vgchange", "-an")
 
-	if err := context.Executor.ExecuteCommand(false, "", "stdbuf", "-oL", "/sbin/vgchange", "-ay"); err != nil {
-		return fmt.Errorf("failed to activate osd. %+v", err)
+		context.Executor.ExecuteCommand(false, "", "stdbuf", "-oL", "/sbin/vgchange", "-ay")
 	}
 
 	// activate the osd with ceph-volume
@@ -113,10 +111,18 @@ func Provision(context *clusterd.Context, agent *OsdAgent) error {
 	}
 
 	logger.Infof("discovering hardware")
-	rawDevices, err := clusterd.DiscoverDevices(context.Executor)
-	if err != nil {
-		return fmt.Errorf("failed initial hardware discovery. %+v", err)
+	var rawDevices []*sys.LocalDisk
+	if agent.pvcBacked {
+		for _, d := range agent.devices {
+			rawDevices = append(rawDevices, clusterd.PopulateDeviceInfo(d.Name, context.Executor))
+		}
+	} else {
+		rawDevices, err = clusterd.DiscoverDevices(context.Executor)
+		if err != nil {
+			return fmt.Errorf("failed initial hardware discovery. %+v", err)
+		}
 	}
+
 	context.Devices = rawDevices
 
 	logger.Infof("creating and starting the osds")
@@ -134,7 +140,7 @@ func Provision(context *clusterd.Context, agent *OsdAgent) error {
 	}
 
 	// orchestration is about to start, update the status
-	status = oposd.OrchestrationStatus{Status: oposd.OrchestrationStatusOrchestrating}
+	status = oposd.OrchestrationStatus{Status: oposd.OrchestrationStatusOrchestrating, PvcBackedOSD: agent.pvcBacked}
 	if err := oposd.UpdateNodeStatus(agent.kv, agent.nodeName, status); err != nil {
 		return err
 	}
@@ -181,7 +187,7 @@ func Provision(context *clusterd.Context, agent *OsdAgent) error {
 	osds := append(deviceOSDs, dirOSDs...)
 
 	// orchestration is completed, update the status
-	status = oposd.OrchestrationStatus{OSDs: osds, Status: oposd.OrchestrationStatusCompleted}
+	status = oposd.OrchestrationStatus{OSDs: osds, Status: oposd.OrchestrationStatusCompleted, PvcBackedOSD: agent.pvcBacked}
 	if err := oposd.UpdateNodeStatus(agent.kv, agent.nodeName, status); err != nil {
 		return err
 	}

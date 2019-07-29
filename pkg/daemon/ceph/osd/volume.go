@@ -58,27 +58,49 @@ func (a *OsdAgent) configureCVDevices(context *clusterd.Context, devices *Device
 		return nil, fmt.Errorf("failed to generate osd keyring. %+v", err)
 	}
 
-	if err = a.initializeBlockPVC(context); err != nil {
-		return nil, fmt.Errorf("failed to initialize devices. %+v", err)
+	if a.pvcBacked {
+		if err = a.initializeBlockPVC(context, devices); err != nil {
+			return nil, fmt.Errorf("failed to initialize devices. %+v", err)
+		}
+	} else {
+		if err = a.initializeDevices(context, devices); err != nil {
+			return nil, fmt.Errorf("failed to initialize devices. %+v", err)
+		}
 	}
-
-	/* if err = a.initializeDevices(context, devices); err != nil {
-		return nil, fmt.Errorf("failed to initialize devices. %+v", err)
-	} */
 
 	osds, err = getCephVolumeOSDs(context, a.cluster.Name, a.cluster.FSID)
 	return osds, err
 }
 
-func (a *OsdAgent) initializeBlockPVC(context *clusterd.Context) error {
+func (a *OsdAgent) initializeBlockPVC(context *clusterd.Context, devices *DeviceOsdMapping) error {
 	if err := sedChanges(context); err != nil {
 		return fmt.Errorf("sed failure, %+v", err) // fail return here as validation provided by ceph-volume
 	}
 	baseCommand := "stdbuf"
-	baseArgs := []string{"-oL", cephVolumeCmd, "lvm", "prepare", "--data", "/mnt/example-pvc", "--no-systemd"}
-	if err := context.Executor.ExecuteCommand(false, "", baseCommand, baseArgs...); err != nil {
-		return fmt.Errorf("failed ceph-volume. %+v", err) // fail return here as validation provided by ceph-volume
+	baseArgs := []string{"-oL", cephVolumeCmd, "lvm", "prepare", "--no-systemd"}
+
+	for name, device := range devices.Entries {
+		if device.LegacyPartitionsFound {
+			logger.Infof("skipping device %s configured with legacy rook osd", name)
+			continue
+		}
+		if device.Data == -1 {
+			logger.Infof("configuring new device %s", name)
+			deviceArg := device.Config.Name
+			immediateExecuteArgs := append(baseArgs, []string{
+				"--data",
+				deviceArg,
+			}...)
+			// execute ceph-volume with the device
+
+			if err := context.Executor.ExecuteCommand(false, "", baseCommand, immediateExecuteArgs...); err != nil {
+				return fmt.Errorf("failed ceph-volume. %+v", err) // fail return here as validation provided by ceph-volume
+			}
+		} else {
+			logger.Infof("skipping device %s with osd %d already configured", name, device.Data)
+		}
 	}
+
 	return nil
 }
 

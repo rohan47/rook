@@ -169,8 +169,6 @@ func (c *Cluster) completeOSDsForAllNodes(config *provisionConfig, configOSDs bo
 		return true
 	}
 
-	logger.Infof("############# originalNodes %v; remainingNodes %v; completed %v; statuses: %v; selector: %v", originalNodes, remainingNodes, completed, statuses, selector)
-
 	currentTimeoutMinutes := 0
 	for {
 		opts := metav1.ListOptions{
@@ -255,11 +253,15 @@ func (c *Cluster) handleStatusConfigMapStatus(nodeName string, config *provision
 	logger.Infof("osd orchestration status for node %s is %s", nodeName, status.Status)
 	if status.Status == OrchestrationStatusCompleted {
 		if configOSDs {
-			//c.startOSDDaemonsOnNode(nodeName, config, configMap, status)
-			c.startOSDDaemonsOnPVC(nodeName, config, configMap, status)
+			if status.PvcBackedOSD {
+				c.startOSDDaemonsOnPVC(nodeName, config, configMap, status)
+			} else {
+				c.startOSDDaemonsOnNode(nodeName, config, configMap, status)
+			}
+			// remove the status configmap that indicated the progress
+			c.kv.ClearStore(fmt.Sprintf(orchestrationStatusMapName, nodeName))
 		}
-		// remove the status configmap that indicated the progress
-		c.kv.ClearStore(fmt.Sprintf(orchestrationStatusMapName, nodeName))
+
 		return true
 	}
 

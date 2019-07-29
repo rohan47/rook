@@ -398,7 +398,7 @@ func createTestAgent(t *testing.T, devices, configDir, nodeName string, storeCon
 	cluster := &cephconfig.ClusterInfo{Name: "myclust"}
 	context := &clusterd.Context{ConfigDir: configDir, Executor: executor, Clientset: testop.New(1)}
 	agent := NewAgent(context, desiredDevices, "", "", forceFormat, location, *storeConfig,
-		cluster, nodeName, mockKVStore())
+		cluster, nodeName, mockKVStore(), false)
 
 	return agent, executor, context
 }
