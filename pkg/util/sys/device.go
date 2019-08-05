@@ -92,6 +92,7 @@ func ListDevices(executor exec.Executor) ([]string, error) {
 }
 
 func GetDevicePartitions(device string, executor exec.Executor) (partitions []Partition, unusedSpace uint64, err error) {
+	deviceName := device
 	devicePath := strings.Split(device, "/")
 	if len(devicePath) == 1 {
 		device = fmt.Sprintf("/dev/%s", device)
@@ -115,7 +116,7 @@ func GetDevicePartitions(device string, executor exec.Executor) (partitions []Pa
 			if err != nil {
 				return nil, 0, fmt.Errorf("failed to get device %s size. %+v", device, err)
 			}
-		} else if props["PKNAME"] == device && props["TYPE"] == PartType {
+		} else if (props["PKNAME"] == device || props["PKNAME"] == deviceName) && props["TYPE"] == PartType {
 			// found a partition
 			p := Partition{Name: name}
 			p.Size, err = strconv.ParseUint(props["SIZE"], 10, 64)
@@ -147,7 +148,6 @@ func GetDevicePartitions(device string, executor exec.Executor) (partitions []Pa
 	}
 	return partitions, unusedSpace, nil
 }
-
 func GetDeviceProperties(device string, executor exec.Executor) (map[string]string, error) {
 	devicePath := strings.Split(device, "/")
 	if len(devicePath) == 1 {

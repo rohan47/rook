@@ -24,9 +24,12 @@ import (
 	"github.com/rook/rook/pkg/util"
 	apps "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/apps/v1"
+	batchv1 "k8s.io/api/batch/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 )
+
+const osdOverPVCLabelKey = "rook.io/pvc"
 
 // GetDeploymentImage returns the version of the image running in the pod spec for the desired container
 func GetDeploymentImage(clientset kubernetes.Interface, namespace, name, container string) (string, error) {
@@ -180,4 +183,28 @@ func AddRookVersionLabelToDeployment(d *v1.Deployment) {
 		d.Labels = map[string]string{}
 	}
 	addRookVersionLabel(d.Labels)
+}
+
+func AddPVCLabelToDeployement(pvcName string, d *v1.Deployment) {
+	if d == nil {
+		return
+	}
+	if d.Labels == nil {
+		d.Labels = map[string]string{}
+	}
+	addPVCLabel(pvcName, d.Labels)
+}
+
+func AddPVCLabelToJob(pvcName string, b *batchv1.Job) {
+	if b == nil {
+		return
+	}
+	if b.Labels == nil {
+		b.Labels = map[string]string{}
+	}
+	addPVCLabel(pvcName, b.Labels)
+}
+
+func addPVCLabel(pvcName string, labels map[string]string) {
+	labels[osdOverPVCLabelKey] = pvcName
 }

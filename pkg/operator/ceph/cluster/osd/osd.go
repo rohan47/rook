@@ -145,20 +145,28 @@ type OSDObject struct {
 
 // Start the osd management
 func (c *Cluster) Start() error {
+	config := newProvisionConfig()
+	c.DesiredStorage.VolumeSources = append(c.DesiredStorage.VolumeSources, c.prepareStorageClassDeviceSets(config)...)
+	validVolumeSources, err := k8sutil.GetValidVolumeSources(c.context.Clientset, c.Namespace, c.DesiredStorage.VolumeSources)
+	if err != nil {
+		return err
+	}
+	c.ValidStorage.VolumeSources = validVolumeSources
+
 	// Validate pod's memory if specified
 	// This is valid for both Filestore and Bluestore
-	err := opspec.CheckPodMemory(c.resources, cephOsdPodMinimumMemory)
+	err = opspec.CheckPodMemory(c.resources, cephOsdPodMinimumMemory)
 	if err != nil {
 		return fmt.Errorf("%v", err)
 	}
 
 	logger.Infof("start running osds in namespace %s", c.Namespace)
 
-	if c.DesiredStorage.UseAllNodes == false && len(c.DesiredStorage.Nodes) == 0 && len(c.DesiredStorage.PersistentVolumeClaim) == 0 {
+	if c.DesiredStorage.UseAllNodes == false && len(c.DesiredStorage.Nodes) == 0 && len(c.ValidStorage.VolumeSources) == 0 {
 		logger.Warningf("useAllNodes is set to false and no nodes are specified, no OSD pods are going to be created")
 	}
 
-	if len(c.DesiredStorage.PersistentVolumeClaim) == 0 {
+	if len(c.ValidStorage.VolumeSources) == 0 {
 		if c.DesiredStorage.UseAllNodes {
 			// Get the list of all nodes in the cluster. The placement settings will be applied below.
 			hostnameMap, err := k8sutil.GetNodeHostNames(c.context.Clientset)
@@ -179,7 +187,7 @@ func (c *Cluster) Start() error {
 		validNodes := k8sutil.GetValidNodes(c.DesiredStorage, c.context.Clientset, c.placement)
 
 		// no valid node is ready to run an osd
-		if len(validNodes) == 0 && len(c.DesiredStorage.PersistentVolumeClaim) == 0 {
+		if len(validNodes) == 0 && len(c.ValidStorage.VolumeSources) == 0 {
 			logger.Warningf("no valid node available to run an osd in namespace %s. "+
 				"Rook will not create any new OSD nodes and will skip checking for removed nodes since "+
 				"removing all OSD nodes without destroying the Rook cluster is unlikely to be intentional", c.Namespace)
@@ -193,7 +201,7 @@ func (c *Cluster) Start() error {
 	}
 
 	// start the jobs to provision the OSD devices and directories
-	config := newProvisionConfig()
+
 	logger.Infof("start provisioning the osds on nodes, if needed")
 	c.startProvisioning(config)
 	// start the OSD pods, waiting for the provisioning to be completed
@@ -201,7 +209,7 @@ func (c *Cluster) Start() error {
 	c.completeProvision(config)
 
 	// handle the removed nodes and rebalance the PGs
-	if len(c.DesiredStorage.PersistentVolumeClaim) == 0 {
+	if len(c.ValidStorage.VolumeSources) == 0 {
 		logger.Infof("checking if any nodes were removed")
 		c.handleRemovedNodes(config)
 	}
@@ -248,10 +256,10 @@ func (c *Cluster) startProvisioning(config *provisionConfig) {
 		return
 	}
 
-	for _, pvc := range c.DesiredStorage.PersistentVolumeClaim {
+	for _, volume := range c.ValidStorage.VolumeSources {
 		osdObject := OSDObject{
-			name: pvc.ClaimName,
-			pvc:  pvc,
+			name: volume.PersistentVolumeClaimSource.ClaimName,
+			pvc:  volume.PersistentVolumeClaimSource,
 		}
 
 		// update the orchestration status of this pvc to the starting state
@@ -357,7 +365,6 @@ func (c *Cluster) runJob(job *batch.Job, nodeName string, config *provisionConfi
 }
 
 func (c *Cluster) startOSDDaemonsOnPVC(pvcName string, config *provisionConfig, configMap *v1.ConfigMap, status *OrchestrationStatus) {
-
 	osds := status.OSDs
 	logger.Infof("starting %d osd daemons on node %s", len(osds), pvcName)
 	conf := make(map[string]string)
@@ -683,4 +690,61 @@ func (c *Cluster) resolveNode(nodeName string) *rookalpha.Node {
 	rookNode.Resources = k8sutil.MergeResourceRequirements(rookNode.Resources, c.resources)
 
 	return rookNode
+}
+
+func (c *Cluster) prepareStorageClassDeviceSets(config *provisionConfig) []rookalpha.VolumeSource {
+	volumeSources := []rookalpha.VolumeSource{}
+	for _, storageClassDeviceSet := range c.DesiredStorage.StorageClassDeviceSets {
+		if err := opspec.CheckPodMemory(storageClassDeviceSet.Resources, cephOsdPodMinimumMemory); err != nil {
+			config.addError("cannot use storageClassDeviceSet %s for creating osds %v", storageClassDeviceSet.Name, err)
+			continue
+		}
+		for setIndex := 0; setIndex < storageClassDeviceSet.Count; setIndex++ {
+			pvc, err := c.createStorageClassDeviceSetPVC(storageClassDeviceSet, setIndex)
+			if err != nil {
+				config.addError("%+v", err)
+				config.addError("OSD creation for storageClassDeviceSet %v failed for count %v", storageClassDeviceSet.Name, setIndex)
+				continue
+			}
+			volumeSources = append(volumeSources, rookalpha.VolumeSource{
+				Name:      storageClassDeviceSet.Name,
+				Resources: storageClassDeviceSet.Resources,
+				Placement: storageClassDeviceSet.Placement,
+				Config:    storageClassDeviceSet.Config,
+				PersistentVolumeClaimSource: v1.PersistentVolumeClaimVolumeSource{
+					ClaimName: pvc.GetName(),
+					ReadOnly:  false,
+				},
+			})
+			logger.Infof("successfully provisioned osd for storageClassDeviceSet %s of set %v", storageClassDeviceSet.Name, setIndex)
+		}
+	}
+	return volumeSources
+}
+
+func (c *Cluster) createStorageClassDeviceSetPVC(storageClassDeviceSet rookalpha.StorageClassDeviceSet, setIndex int) (*v1.PersistentVolumeClaim, error) {
+	if len(storageClassDeviceSet.VolumeClaimTemplates) == 0 {
+		return nil, fmt.Errorf("No PVC available for storageClassDeviceSet %s", storageClassDeviceSet.Name)
+	}
+	deployedPVCs := []v1.PersistentVolumeClaim{}
+	pvcStorageClassDeviceSetPVCId, pvcStorageClassDeviceSetPVCIdLabelSelector := makeStorageClassDeviceSetPVCID(storageClassDeviceSet.Name, setIndex, 0)
+
+	pvc := makeStorageClassDeviceSetPVC(storageClassDeviceSet.Name, pvcStorageClassDeviceSetPVCId, 0, setIndex, storageClassDeviceSet.VolumeClaimTemplates[0])
+	// Check if a PVC already exists with same StorageClassDeviceSet label
+	presentPVCs, err := c.context.Clientset.CoreV1().PersistentVolumeClaims(c.Namespace).List(metav1.ListOptions{LabelSelector: pvcStorageClassDeviceSetPVCIdLabelSelector})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create pvc %v for storageClassDeviceSet %v, err %+v", pvc.GetGenerateName(), storageClassDeviceSet.Name, err)
+	}
+	if len(presentPVCs.Items) == 0 { // No PVC found, creating a new one
+		deployedPVC, err := c.context.Clientset.CoreV1().PersistentVolumeClaims(c.Namespace).Create(pvc)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create pvc %v for storageClassDeviceSet %v, err %+v", pvc.GetGenerateName(), storageClassDeviceSet.Name, err)
+		}
+		deployedPVCs = append(deployedPVCs, *deployedPVC)
+	} else if len(presentPVCs.Items) == 1 { // The PVC is already present.
+		deployedPVCs = append(deployedPVCs, presentPVCs.Items...)
+	} else { // More than one PVC exists with same labelSelector
+		return nil, fmt.Errorf("more than one PVCs exists with label %v, pvcs %+v", pvcStorageClassDeviceSetPVCIdLabelSelector, presentPVCs)
+	}
+	return &deployedPVCs[0], nil
 }
