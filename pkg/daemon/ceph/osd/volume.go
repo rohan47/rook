@@ -21,13 +21,11 @@ import (
 	"fmt"
 	"path"
 	"strconv"
-	"syscall"
 
 	"github.com/rook/rook/pkg/clusterd"
 	oposd "github.com/rook/rook/pkg/operator/ceph/cluster/osd"
 	"github.com/rook/rook/pkg/operator/ceph/cluster/osd/config"
 	"github.com/rook/rook/pkg/util/display"
-	"github.com/rook/rook/pkg/util/exec"
 )
 
 var cephConfigDir = "/var/lib/ceph"
@@ -263,18 +261,18 @@ func sanitizeOSDsPerDevice(count int) string {
 }
 
 func getCephVolumeSupported(context *clusterd.Context) (bool, error) {
-	_, err := context.Executor.ExecuteCommandWithOutput(false, "", cephVolumeCmd, "lvm", "prepare")
-	if err != nil {
-		if cmdErr, ok := err.(*exec.CommandError); ok {
-			exitStatus := cmdErr.ExitStatus()
-			if exitStatus == int(syscall.ENOENT) || exitStatus == int(syscall.EPERM) {
-				logger.Infof("supported version of ceph-volume not available")
-				return false, nil
-			}
-			return false, fmt.Errorf("unknown return code from ceph-volume when checking for compatibility: %d", exitStatus)
-		}
-		return false, fmt.Errorf("unknown ceph-volume failure. %+v", err)
-	}
+	// _, err := context.Executor.ExecuteCommandWithOutput(false, "", cephVolumeCmd, "lvm", "prepare")
+	// if err != nil {
+	// 	if cmdErr, ok := err.(*exec.CommandError); ok {
+	// 		exitStatus := cmdErr.ExitStatus()
+	// 		if exitStatus == int(syscall.ENOENT) || exitStatus == int(syscall.EPERM) {
+	// 			logger.Infof("supported version of ceph-volume not available")
+	// 			return false, nil
+	// 		}
+	// 		return false, fmt.Errorf("unknown return code from ceph-volume when checking for compatibility: %d", exitStatus)
+	// 	}
+	// 	return false, fmt.Errorf("unknown ceph-volume failure. %+v", err)
+	// }
 
 	return true, nil
 }

@@ -82,6 +82,11 @@ func (c *Cluster) makeJob(osdObject OSDObject) (*batch.Job, error) {
 			Template: *podSpec,
 		},
 	}
+
+	if len(osdObject.pvc.ClaimName) > 0 {
+		k8sutil.AddPVCLabelToJob(osdObject.pvc.ClaimName, job)
+	}
+
 	k8sutil.AddRookVersionLabelToJob(job)
 	opspec.AddCephVersionLabelToJob(c.clusterInfo.CephVersion, job)
 	k8sutil.SetOwnerRef(&job.ObjectMeta, &c.ownerRef)
@@ -372,6 +377,7 @@ func (c *Cluster) makeDeployment(osdObject OSDObject, osd OSDInfo) (*apps.Deploy
 	} else {
 		deployment.Spec.Template.Spec.NodeSelector = map[string]string{}
 		deployment.Spec.Template.Spec.InitContainers = append(deployment.Spec.Template.Spec.InitContainers, c.getInitContainers(osdObject.pvc))
+		k8sutil.AddPVCLabelToDeployement(osdObject.pvc.ClaimName, deployment)
 	}
 	k8sutil.AddRookVersionLabelToDeployment(deployment)
 	c.annotations.ApplyToObjectMeta(&deployment.ObjectMeta)
@@ -742,4 +748,44 @@ func osdOnSDNFlag(hostnetwork bool, v cephver.CephVersion) []string {
 	}
 
 	return args
+}
+
+func makeStorageClassDeviceSetPVC(storageClassDeviceSetName, pvcStorageClassDeviceSetPVCId string, pvcIndex, setIndex int, pvcTemplate v1.PersistentVolumeClaim) (pvcs *v1.PersistentVolumeClaim) {
+	pvcLabels := makeStorageClassDeviceSetPVCLabel(storageClassDeviceSetName, pvcStorageClassDeviceSetPVCId, pvcIndex, setIndex)
+
+	// pvc naming format <storageClassDeviceSetName>-<SetNumber>-<PVCIndex>
+	pvcGenerateName := pvcStorageClassDeviceSetPVCId + "-"
+
+	// Add pvcTemplate name to pvc name. i.e <storageClassDeviceSetName>-<SetNumber>-<PVCIndex>-<pvcTemplateName>
+	if len(pvcTemplate.GetName()) != 0 {
+		pvcGenerateName = pvcGenerateName + pvcTemplate.GetName() + "-"
+	}
+
+	// Add user provided labels to pvcTemplates
+	for k, v := range pvcTemplate.GetLabels() {
+		pvcLabels[k] = v
+	}
+
+	return &v1.PersistentVolumeClaim{
+		ObjectMeta: metav1.ObjectMeta{
+			GenerateName: pvcGenerateName,
+			Labels:       pvcLabels,
+			Annotations:  pvcTemplate.Annotations,
+		},
+		Spec: pvcTemplate.Spec,
+	}
+}
+
+func makeStorageClassDeviceSetPVCID(storageClassDeviceSetName string, setIndex, pvcIndex int) (pvcId, pvcLabelSelector string) {
+	pvcStorageClassDeviceSetPVCId := fmt.Sprintf("%s-%v-%v", storageClassDeviceSetName, setIndex, pvcIndex)
+	return pvcStorageClassDeviceSetPVCId, fmt.Sprintf("rook.ceph.io/StorageClassDeviceSetPVCId=%s", pvcStorageClassDeviceSetPVCId)
+}
+
+func makeStorageClassDeviceSetPVCLabel(storageClassDeviceSetName, pvcStorageClassDeviceSetPVCId string, pvcIndex, setIndex int) map[string]string {
+	return map[string]string{
+		"ceph.rook.io/storageClassDeviceSet":      storageClassDeviceSetName,
+		"ceph.rook.io/pvcIndex":                   fmt.Sprintf("%v", pvcIndex),
+		"ceph.rook.io/setIndex":                   fmt.Sprintf("%v", setIndex),
+		"ceph.rook.io/StorageClassDeviceSetPVCId": pvcStorageClassDeviceSetPVCId,
+	}
 }

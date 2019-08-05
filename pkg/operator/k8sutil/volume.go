@@ -22,8 +22,11 @@ import (
 	"os"
 	"strings"
 
-	"k8s.io/api/core/v1"
+	rookalpha "github.com/rook/rook/pkg/apis/rook.io/v1alpha2"
+	v1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/validation"
+	"k8s.io/client-go/kubernetes"
 )
 
 const (
@@ -89,4 +92,25 @@ func BinariesMountInfo() (v1.EnvVar, v1.Volume, v1.VolumeMount) {
 	v := v1.Volume{Name: volumeName, VolumeSource: v1.VolumeSource{EmptyDir: &v1.EmptyDirVolumeSource{}}}
 	m := v1.VolumeMount{Name: volumeName, MountPath: BinariesMountPath}
 	return e, v, m
+}
+
+// GetValidVolumeSources returns all volumes that has an OSDDeployment
+func GetValidVolumeSources(clientset kubernetes.Interface, namespace string, volumeSources []rookalpha.VolumeSource) (validVolumes []rookalpha.VolumeSource, err error) {
+	if clientset == nil {
+		return validVolumes, fmt.Errorf("nil clientset received")
+	}
+	for _, vol := range volumeSources {
+		osdDeployments, err := clientset.AppsV1().Deployments(namespace).List(metav1.ListOptions{LabelSelector: osdOverPVCLabelKey + "=" + vol.Name})
+		if err != nil {
+			return validVolumes, err
+		}
+		osdPrepareJob, err := clientset.BatchV1().Jobs(namespace).List(metav1.ListOptions{LabelSelector: osdOverPVCLabelKey + "=" + vol.Name})
+		if err != nil {
+			return validVolumes, err
+		}
+		if len(osdDeployments.Items) == 0 && len(osdPrepareJob.Items) == 0 {
+			validVolumes = append(validVolumes, vol)
+		}
+	}
+	return
 }
