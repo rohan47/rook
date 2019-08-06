@@ -53,25 +53,25 @@ const (
 	osdMemoryTargetSafetyFactor float32 = 0.8
 )
 
-func (c *Cluster) makeJob(osdObject OSDObject) (*batch.Job, error) {
+func (c *Cluster) makeJob(osdProps osdProperties) (*batch.Job, error) {
 
-	podSpec, err := c.provisionPodTemplateSpec(osdObject, v1.RestartPolicyOnFailure)
+	podSpec, err := c.provisionPodTemplateSpec(osdProps, v1.RestartPolicyOnFailure)
 	if err != nil {
 		return nil, err
 	}
 
-	if osdObject.pvc.ClaimName == "" {
-		podSpec.Spec.NodeSelector = map[string]string{v1.LabelHostname: osdObject.name}
+	if osdProps.pvc.ClaimName == "" {
+		podSpec.Spec.NodeSelector = map[string]string{v1.LabelHostname: osdProps.crushHostname}
 	} else {
 		podSpec.Spec.NodeSelector = map[string]string{}
 		podSpec.Spec.InitContainers = []v1.Container{
-			c.getInitContainers(osdObject.pvc),
+			c.getPVCInitContainer(osdProps.pvc),
 		}
 	}
 
 	job := &batch.Job{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      k8sutil.TruncateNodeName(prepareAppNameFmt, osdObject.name),
+			Name:      k8sutil.TruncateNodeName(prepareAppNameFmt, osdProps.crushHostname),
 			Namespace: c.Namespace,
 			Labels: map[string]string{
 				k8sutil.AppAttr:     prepareAppName,
@@ -83,8 +83,8 @@ func (c *Cluster) makeJob(osdObject OSDObject) (*batch.Job, error) {
 		},
 	}
 
-	if len(osdObject.pvc.ClaimName) > 0 {
-		k8sutil.AddPVCLabelToJob(osdObject.pvc.ClaimName, job)
+	if len(osdProps.pvc.ClaimName) > 0 {
+		k8sutil.AddPVCLabelToJob(osdProps.pvc.ClaimName, job)
 	}
 
 	k8sutil.AddRookVersionLabelToJob(job)
@@ -93,7 +93,7 @@ func (c *Cluster) makeJob(osdObject OSDObject) (*batch.Job, error) {
 	return job, nil
 }
 
-func (c *Cluster) makeDeployment(osdObject OSDObject, osd OSDInfo) (*apps.Deployment, error) {
+func (c *Cluster) makeDeployment(osdProps osdProperties, osd OSDInfo) (*apps.Deployment, error) {
 
 	replicaCount := int32(1)
 	volumeMounts := opspec.CephVolumeMounts()
@@ -125,17 +125,17 @@ func (c *Cluster) makeDeployment(osdObject OSDObject, osd OSDInfo) (*apps.Deploy
 		volumeMounts = append(volumeMounts, devMount)
 	}
 
-	if osdObject.pvc.ClaimName != "" {
+	if osdProps.pvc.ClaimName != "" {
 		// Create volume config for PVCs
 		devVolume := v1.Volume{
-			Name: osdObject.name,
+			Name: osdProps.crushHostname,
 			VolumeSource: v1.VolumeSource{
-				PersistentVolumeClaim: &osdObject.pvc,
+				PersistentVolumeClaim: &osdProps.pvc,
 			},
 		}
 		volumes = append(volumes, devVolume)
 		devVolume = v1.Volume{
-			Name: fmt.Sprintf("%s-bridge", osdObject.pvc.ClaimName),
+			Name: fmt.Sprintf("%s-bridge", osdProps.pvc.ClaimName),
 			VolumeSource: v1.VolumeSource{
 				EmptyDir: &v1.EmptyDirVolumeSource{
 					Medium: "Memory",
@@ -157,7 +157,7 @@ func (c *Cluster) makeDeployment(osdObject OSDObject, osd OSDInfo) (*apps.Deploy
 	osdID := strconv.Itoa(osd.ID)
 	tiniEnvVar := v1.EnvVar{Name: "TINI_SUBREAPER", Value: ""}
 	envVars := []v1.EnvVar{
-		nodeNameEnvVar(osdObject.name),
+		nodeNameEnvVar(osdProps.crushHostname),
 		k8sutil.PodIPEnvVar(k8sutil.PrivateIPEnvVar),
 		k8sutil.PodIPEnvVar(k8sutil.PublicIPEnvVar),
 		tiniEnvVar,
@@ -168,7 +168,7 @@ func (c *Cluster) makeDeployment(osdObject OSDObject, osd OSDInfo) (*apps.Deploy
 		{Name: "ROOK_OSD_ID", Value: osdID},
 		{Name: "ROOK_OSD_STORE_TYPE", Value: storeType},
 	}...)
-	configEnvVars := append(c.getConfigEnvVars(osdObject.storeConfig, dataDir, osdObject.name, osdObject.location), []v1.EnvVar{
+	configEnvVars := append(c.getConfigEnvVars(osdProps.storeConfig, dataDir, osdProps.crushHostname, osdProps.location), []v1.EnvVar{
 		tiniEnvVar,
 		{Name: "ROOK_OSD_ID", Value: osdID},
 		{Name: "ROOK_CEPH_VERSION", Value: c.clusterInfo.CephVersion.CephVersionFormatted()},
@@ -281,8 +281,8 @@ func (c *Cluster) makeDeployment(osdObject OSDObject, osd OSDInfo) (*apps.Deploy
 		args = commonArgs
 	}
 
-	if osdObject.pvc.ClaimName != "" {
-		devMount := v1.VolumeMount{Name: fmt.Sprintf("%s-bridge", osdObject.pvc.ClaimName), MountPath: "/mnt"}
+	if osdProps.pvc.ClaimName != "" {
+		devMount := v1.VolumeMount{Name: fmt.Sprintf("%s-bridge", osdProps.pvc.ClaimName), MountPath: "/mnt"}
 		volumeMounts = append(volumeMounts, devMount)
 		envVars = append(envVars, pvcBackedOSDEnvVar("true"))
 	}
@@ -297,7 +297,7 @@ func (c *Cluster) makeDeployment(osdObject OSDObject, osd OSDInfo) (*apps.Deploy
 	}
 
 	// needed for luksOpen synchronization when devices are encrypted
-	hostIPC := osdObject.storeConfig.EncryptedDevice
+	hostIPC := osdProps.storeConfig.EncryptedDevice
 
 	DNSPolicy := v1.DNSClusterFirst
 	if c.HostNetwork {
@@ -336,12 +336,12 @@ func (c *Cluster) makeDeployment(osdObject OSDObject, osd OSDInfo) (*apps.Deploy
 				},
 				Spec: v1.PodSpec{
 					Affinity: &v1.Affinity{
-						NodeAffinity:    osdObject.placement.NodeAffinity,
-						PodAffinity:     osdObject.placement.PodAffinity,
-						PodAntiAffinity: osdObject.placement.PodAntiAffinity,
+						NodeAffinity:    osdProps.placement.NodeAffinity,
+						PodAffinity:     osdProps.placement.PodAffinity,
+						PodAntiAffinity: osdProps.placement.PodAntiAffinity,
 					},
-					Tolerations:        osdObject.placement.Tolerations,
-					NodeSelector:       map[string]string{v1.LabelHostname: osdObject.name},
+					Tolerations:        osdProps.placement.Tolerations,
+					NodeSelector:       map[string]string{v1.LabelHostname: osdProps.crushHostname},
 					RestartPolicy:      v1.RestartPolicyAlways,
 					ServiceAccountName: serviceAccountName,
 					HostNetwork:        c.HostNetwork,
@@ -367,7 +367,7 @@ func (c *Cluster) makeDeployment(osdObject OSDObject, osd OSDInfo) (*apps.Deploy
 							Image:           c.cephVersion.Image,
 							VolumeMounts:    volumeMounts,
 							Env:             envVars,
-							Resources:       osdObject.resources,
+							Resources:       osdProps.resources,
 							SecurityContext: securityContext,
 							Lifecycle:       opspec.PodLifeCycle(osd.DataPath),
 						},
@@ -378,12 +378,12 @@ func (c *Cluster) makeDeployment(osdObject OSDObject, osd OSDInfo) (*apps.Deploy
 			Replicas: &replicaCount,
 		},
 	}
-	if osdObject.pvc.ClaimName == "" {
-		deployment.Spec.Template.Spec.NodeSelector = map[string]string{v1.LabelHostname: osdObject.name}
+	if osdProps.pvc.ClaimName == "" {
+		deployment.Spec.Template.Spec.NodeSelector = map[string]string{v1.LabelHostname: osdProps.crushHostname}
 	} else {
 		deployment.Spec.Template.Spec.NodeSelector = map[string]string{}
-		deployment.Spec.Template.Spec.InitContainers = append(deployment.Spec.Template.Spec.InitContainers, c.getInitContainers(osdObject.pvc))
-		k8sutil.AddPVCLabelToDeployement(osdObject.pvc.ClaimName, deployment)
+		deployment.Spec.Template.Spec.InitContainers = append(deployment.Spec.Template.Spec.InitContainers, c.getPVCInitContainer(osdProps.pvc))
+		k8sutil.AddPVCLabelToDeployement(osdProps.pvc.ClaimName, deployment)
 	}
 	k8sutil.AddRookVersionLabelToDeployment(deployment)
 	c.annotations.ApplyToObjectMeta(&deployment.ObjectMeta)
@@ -412,14 +412,14 @@ func (c *Cluster) getCopyBinariesContainer() (v1.Volume, *v1.Container) {
 	}
 }
 
-func (c *Cluster) provisionPodTemplateSpec(osdObject OSDObject, restart v1.RestartPolicy) (*v1.PodTemplateSpec, error) {
+func (c *Cluster) provisionPodTemplateSpec(osdProps osdProperties, restart v1.RestartPolicy) (*v1.PodTemplateSpec, error) {
 
 	copyBinariesVolume, copyBinariesContainer := c.getCopyBinariesContainer()
 
 	volumes := append(opspec.PodVolumes(c.dataDirHostPath, c.Namespace), copyBinariesVolume)
 
 	// by default, don't define any volume config unless it is required
-	if len(osdObject.devices) > 0 || osdObject.selection.DeviceFilter != "" || osdObject.selection.GetUseAllDevices() || osdObject.metadataDevice != "" {
+	if len(osdProps.devices) > 0 || osdProps.selection.DeviceFilter != "" || osdProps.selection.GetUseAllDevices() || osdProps.metadataDevice != "" {
 		// create volume config for the data dir and /dev so the pod can access devices on the host
 		devVolume := v1.Volume{Name: "devices", VolumeSource: v1.VolumeSource{HostPath: &v1.HostPathVolumeSource{Path: "/dev"}}}
 		volumes = append(volumes, devVolume)
@@ -427,17 +427,17 @@ func (c *Cluster) provisionPodTemplateSpec(osdObject OSDObject, restart v1.Resta
 		volumes = append(volumes, udevVolume)
 	}
 
-	if osdObject.pvc.ClaimName != "" {
+	if osdProps.pvc.ClaimName != "" {
 		// Create volume config for PVCs
 		devVolume := v1.Volume{
-			Name: osdObject.name,
+			Name: osdProps.crushHostname,
 			VolumeSource: v1.VolumeSource{
-				PersistentVolumeClaim: &osdObject.pvc,
+				PersistentVolumeClaim: &osdProps.pvc,
 			},
 		}
 		volumes = append(volumes, devVolume)
 		devVolume = v1.Volume{
-			Name: fmt.Sprintf("%s-bridge", osdObject.pvc.ClaimName),
+			Name: fmt.Sprintf("%s-bridge", osdProps.pvc.ClaimName),
 			VolumeSource: v1.VolumeSource{
 				EmptyDir: &v1.EmptyDirVolumeSource{
 					Medium: "Memory",
@@ -448,7 +448,7 @@ func (c *Cluster) provisionPodTemplateSpec(osdObject OSDObject, restart v1.Resta
 	}
 
 	// add each OSD directory as another host path volume source
-	for _, d := range osdObject.selection.Directories {
+	for _, d := range osdProps.selection.Directories {
 		if c.skipVolumeForDirectory(d.Path) {
 			// the dataDirHostPath has already been added as a volume
 			continue
@@ -468,22 +468,22 @@ func (c *Cluster) provisionPodTemplateSpec(osdObject OSDObject, restart v1.Resta
 		ServiceAccountName: serviceAccountName,
 		Containers: []v1.Container{
 			*copyBinariesContainer,
-			c.provisionOSDContainer(osdObject, copyBinariesContainer.VolumeMounts[0]),
+			c.provisionOSDContainer(osdProps, copyBinariesContainer.VolumeMounts[0]),
 		},
 		RestartPolicy: restart,
 		Volumes:       volumes,
 		HostNetwork:   c.HostNetwork,
 		Affinity: &v1.Affinity{
-			PodAffinity:     osdObject.placement.PodAffinity,
-			NodeAffinity:    osdObject.placement.NodeAffinity,
-			PodAntiAffinity: osdObject.placement.PodAntiAffinity,
+			PodAffinity:     osdProps.placement.PodAffinity,
+			NodeAffinity:    osdProps.placement.NodeAffinity,
+			PodAntiAffinity: osdProps.placement.PodAntiAffinity,
 		},
-		Tolerations: osdObject.placement.Tolerations,
+		Tolerations: osdProps.placement.Tolerations,
 	}
 	if c.HostNetwork {
 		podSpec.DNSPolicy = v1.DNSClusterFirstWithHostNet
 	}
-	if osdObject.pvc.ClaimName == "" {
+	if osdProps.pvc.ClaimName == "" {
 		c.placement.ApplyToPodSpec(&podSpec)
 	}
 
@@ -500,7 +500,7 @@ func (c *Cluster) provisionPodTemplateSpec(osdObject OSDObject, restart v1.Resta
 
 	// ceph-volume --dmcrypt uses cryptsetup that synchronizes with udev on
 	// host through semaphore
-	podSpec.HostIPC = osdObject.storeConfig.EncryptedDevice
+	podSpec.HostIPC = osdProps.storeConfig.EncryptedDevice
 
 	return &v1.PodTemplateSpec{
 		ObjectMeta: podMeta,
@@ -508,7 +508,7 @@ func (c *Cluster) provisionPodTemplateSpec(osdObject OSDObject, restart v1.Resta
 	}, nil
 }
 
-func (c *Cluster) getInitContainers(pvc v1.PersistentVolumeClaimVolumeSource) v1.Container {
+func (c *Cluster) getPVCInitContainer(pvc v1.PersistentVolumeClaimVolumeSource) v1.Container {
 	return v1.Container{
 		Name:  "blkdevmapper",
 		Image: c.cephVersion.Image,
@@ -580,40 +580,40 @@ func (c *Cluster) getConfigEnvVars(storeConfig config.StoreConfig, dataDir, node
 	return envVars
 }
 
-func (c *Cluster) provisionOSDContainer(osdObject OSDObject, copyBinariesMount v1.VolumeMount) v1.Container {
+func (c *Cluster) provisionOSDContainer(osdProps osdProperties, copyBinariesMount v1.VolumeMount) v1.Container {
 
-	envVars := c.getConfigEnvVars(osdObject.storeConfig, k8sutil.DataDir, osdObject.name, osdObject.location)
+	envVars := c.getConfigEnvVars(osdProps.storeConfig, k8sutil.DataDir, osdProps.crushHostname, osdProps.location)
 	devMountNeeded := false
 	privileged := false
 
 	// only 1 of device list, device filter and use all devices can be specified.  We prioritize in that order.
-	if len(osdObject.devices) > 0 {
-		deviceNames := make([]string, len(osdObject.devices))
-		for i, device := range osdObject.devices {
+	if len(osdProps.devices) > 0 {
+		deviceNames := make([]string, len(osdProps.devices))
+		for i, device := range osdProps.devices {
 			devSuffix := ""
 			count := "1"
 			if count, ok := device.Config[config.OSDsPerDeviceKey]; ok {
-				logger.Infof("%s osds requested on device %s (node %s)", count, device.Name, osdObject.name)
+				logger.Infof("%s osds requested on device %s (node %s)", count, device.Name, osdProps.crushHostname)
 			}
 			devSuffix += ":" + count
 			if md, ok := device.Config[config.MetadataDeviceKey]; ok {
-				logger.Infof("osd %s requested with metadataDevice %s (node %s)", device.Name, md, osdObject.name)
+				logger.Infof("osd %s requested with metadataDevice %s (node %s)", device.Name, md, osdProps.crushHostname)
 				devSuffix += ":" + md
 			}
 			deviceNames[i] = device.Name + devSuffix
 		}
 		envVars = append(envVars, dataDevicesEnvVar(strings.Join(deviceNames, ",")))
 		devMountNeeded = true
-	} else if osdObject.selection.DeviceFilter != "" {
-		envVars = append(envVars, deviceFilterEnvVar(osdObject.selection.DeviceFilter))
+	} else if osdProps.selection.DeviceFilter != "" {
+		envVars = append(envVars, deviceFilterEnvVar(osdProps.selection.DeviceFilter))
 		devMountNeeded = true
-	} else if osdObject.selection.GetUseAllDevices() {
+	} else if osdProps.selection.GetUseAllDevices() {
 		envVars = append(envVars, deviceFilterEnvVar("all"))
 		devMountNeeded = true
 	}
 
-	if osdObject.metadataDevice != "" {
-		envVars = append(envVars, metadataDeviceEnvVar(osdObject.metadataDevice))
+	if osdProps.metadataDevice != "" {
+		envVars = append(envVars, metadataDeviceEnvVar(osdProps.metadataDevice))
 		devMountNeeded = true
 	}
 
@@ -625,18 +625,18 @@ func (c *Cluster) provisionOSDContainer(osdObject OSDObject, copyBinariesMount v
 		volumeMounts = append(volumeMounts, udevMount)
 	}
 
-	if osdObject.pvc.ClaimName != "" {
-		devMount := v1.VolumeMount{Name: fmt.Sprintf("%s-bridge", osdObject.pvc.ClaimName), MountPath: "/mnt"}
+	if osdProps.pvc.ClaimName != "" {
+		devMount := v1.VolumeMount{Name: fmt.Sprintf("%s-bridge", osdProps.pvc.ClaimName), MountPath: "/mnt"}
 		volumeMounts = append(volumeMounts, devMount)
-		envVars = append(envVars, dataDevicesEnvVar(strings.Join([]string{fmt.Sprintf("/mnt/%s", osdObject.pvc.ClaimName)}, ",")))
+		envVars = append(envVars, dataDevicesEnvVar(strings.Join([]string{fmt.Sprintf("/mnt/%s", osdProps.pvc.ClaimName)}, ",")))
 		envVars = append(envVars, pvcBackedOSDEnvVar("true"))
 	}
 
-	if len(osdObject.selection.Directories) > 0 {
+	if len(osdProps.selection.Directories) > 0 {
 		// for each directory the user has specified, create a volume mount and pass it to the pod via cmd line arg
-		dirPaths := make([]string, len(osdObject.selection.Directories))
-		for i := range osdObject.selection.Directories {
-			dpath := osdObject.selection.Directories[i].Path
+		dirPaths := make([]string, len(osdProps.selection.Directories))
+		for i := range osdProps.selection.Directories {
+			dpath := osdProps.selection.Directories[i].Path
 			dirPaths[i] = dpath
 			if c.skipVolumeForDirectory(dpath) {
 				// the dataDirHostPath has already been added as a volume mount
@@ -645,13 +645,13 @@ func (c *Cluster) provisionOSDContainer(osdObject OSDObject, copyBinariesMount v
 			volumeMounts = append(volumeMounts, v1.VolumeMount{Name: k8sutil.PathToVolumeName(dpath), MountPath: dpath})
 		}
 
-		if !IsRemovingNode(osdObject.selection.DeviceFilter) {
+		if !IsRemovingNode(osdProps.selection.DeviceFilter) {
 			envVars = append(envVars, dataDirectoriesEnvVar(strings.Join(dirPaths, ",")))
 		}
 	}
 
 	// elevate to be privileged if it is going to mount devices or if running in a restricted environment such as openshift
-	if devMountNeeded || os.Getenv("ROOK_HOSTPATH_REQUIRES_PRIVILEGED") == "true" || osdObject.pvc.ClaimName != "" {
+	if devMountNeeded || os.Getenv("ROOK_HOSTPATH_REQUIRES_PRIVILEGED") == "true" || osdProps.pvc.ClaimName != "" {
 		privileged = true
 	}
 	runAsUser := int64(0)
@@ -671,7 +671,7 @@ func (c *Cluster) provisionOSDContainer(osdObject OSDObject, copyBinariesMount v
 			RunAsNonRoot:           &runAsNonRoot,
 			ReadOnlyRootFilesystem: &readOnlyRootFilesystem,
 		},
-		Resources: osdObject.resources,
+		Resources: osdProps.resources,
 	}
 
 	return osdProvisionContainer

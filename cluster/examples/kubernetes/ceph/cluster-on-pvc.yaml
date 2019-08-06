@@ -17,6 +17,7 @@ metadata:
 spec:
   dataDirHostPath: /var/lib/rook
   mon:
+    count: 3
     # A volume claim template can be specified in which case new monitors (and
     # monitors created during fail over) will construct a PVC based on the
     # template for the monitor's primary storage. Changes to the template do not
@@ -127,6 +128,7 @@ spec:
             requests:
               storage: 5Ti
           storageClassName: gp2-ebs
+          volumeMode: Block
           accessModes:
             - ReadWriteOnce
       - metadata:
@@ -137,6 +139,7 @@ spec:
               storage: 5Ti
           volumeMode: Block
           storageClassName: gp2-ebs
+          volumeMode: Block
           accessModes:
             - ReadWriteOnce
     useAllNodes: true

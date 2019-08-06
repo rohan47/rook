@@ -21,11 +21,13 @@ import (
 	"fmt"
 	"path"
 	"strconv"
+	"strings"
 
 	"github.com/rook/rook/pkg/clusterd"
 	oposd "github.com/rook/rook/pkg/operator/ceph/cluster/osd"
 	"github.com/rook/rook/pkg/operator/ceph/cluster/osd/config"
 	"github.com/rook/rook/pkg/util/display"
+	"github.com/rook/rook/pkg/util/sys"
 )
 
 var cephConfigDir = "/var/lib/ceph"
@@ -40,11 +42,12 @@ const (
 
 func (a *OsdAgent) configureCVDevices(context *clusterd.Context, devices *DeviceOsdMapping) ([]oposd.OSDInfo, error) {
 	var osds []oposd.OSDInfo
+	var lv string
 
 	var err error
 	if len(devices.Entries) == 0 {
 		logger.Infof("no new devices to configure. returning devices already configured with ceph-volume.")
-		osds, err = getCephVolumeOSDs(context, a.cluster.Name, a.cluster.FSID)
+		osds, err = getCephVolumeOSDs(context, a.cluster.Name, a.cluster.FSID, lv)
 		if err != nil {
 			logger.Infof("failed to get devices already provisioned by ceph-volume. %+v", err)
 		}
@@ -55,9 +58,8 @@ func (a *OsdAgent) configureCVDevices(context *clusterd.Context, devices *Device
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate osd keyring. %+v", err)
 	}
-
 	if a.pvcBacked {
-		if err = a.initializeBlockPVC(context, devices); err != nil {
+		if lv, err = a.initializeBlockPVC(context, devices); err != nil {
 			return nil, fmt.Errorf("failed to initialize devices. %+v", err)
 		}
 	} else {
@@ -66,17 +68,17 @@ func (a *OsdAgent) configureCVDevices(context *clusterd.Context, devices *Device
 		}
 	}
 
-	osds, err = getCephVolumeOSDs(context, a.cluster.Name, a.cluster.FSID)
+	osds, err = getCephVolumeOSDs(context, a.cluster.Name, a.cluster.FSID, lv)
 	return osds, err
 }
 
-func (a *OsdAgent) initializeBlockPVC(context *clusterd.Context, devices *DeviceOsdMapping) error {
+func (a *OsdAgent) initializeBlockPVC(context *clusterd.Context, devices *DeviceOsdMapping) (string, error) {
 	if err := sedChanges(context); err != nil {
-		return fmt.Errorf("sed failure, %+v", err) // fail return here as validation provided by ceph-volume
+		return "", fmt.Errorf("sed failure, %+v", err) // fail return here as validation provided by ceph-volume
 	}
 	baseCommand := "stdbuf"
-	baseArgs := []string{"-oL", cephVolumeCmd, "lvm", "prepare", "--no-systemd"}
-
+	baseArgs := []string{"-oL", cephVolumeCmd, "lvm", "prepare"}
+	var lvpath string
 	for name, device := range devices.Entries {
 		if device.LegacyPartitionsFound {
 			logger.Infof("skipping device %s configured with legacy rook osd", name)
@@ -91,15 +93,20 @@ func (a *OsdAgent) initializeBlockPVC(context *clusterd.Context, devices *Device
 			}...)
 			// execute ceph-volume with the device
 
-			if err := context.Executor.ExecuteCommand(false, "", baseCommand, immediateExecuteArgs...); err != nil {
-				return fmt.Errorf("failed ceph-volume. %+v", err) // fail return here as validation provided by ceph-volume
+			if op, err := context.Executor.ExecuteCommandWithOutput(false, "", baseCommand, immediateExecuteArgs...); err != nil {
+				return "", fmt.Errorf("failed ceph-volume. %+v", err) // fail return here as validation provided by ceph-volume
+			} else {
+				logger.Infof("%v", op)
+				vg := strings.Split(sys.Grep(op, "Volume group"), "\"")[1]
+				lv := strings.Split(sys.Grep(op, "Logical volume"), "\"")[1]
+				lvpath = fmt.Sprintf("/dev/%s/%s", vg, lv)
 			}
 		} else {
 			logger.Infof("skipping device %s with osd %d already configured", name, device.Data)
 		}
 	}
 
-	return nil
+	return lvpath, nil
 }
 
 func sedChanges(context *clusterd.Context) error {
@@ -277,9 +284,9 @@ func getCephVolumeSupported(context *clusterd.Context) (bool, error) {
 	return true, nil
 }
 
-func getCephVolumeOSDs(context *clusterd.Context, clusterName string, cephfsid string) ([]oposd.OSDInfo, error) {
+func getCephVolumeOSDs(context *clusterd.Context, clusterName string, cephfsid string, lv string) ([]oposd.OSDInfo, error) {
 
-	result, err := context.Executor.ExecuteCommandWithOutput(false, "", cephVolumeCmd, "lvm", "list", "--format", "json")
+	result, err := context.Executor.ExecuteCommandWithOutput(false, "", cephVolumeCmd, "lvm", "list", lv, "--format", "json")
 	if err != nil {
 		return nil, fmt.Errorf("failed to retrieve ceph-volume results. %+v", err)
 	}

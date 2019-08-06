@@ -132,8 +132,8 @@ type OrchestrationStatus struct {
 	Message      string    `json:"message"`
 }
 
-type OSDObject struct {
-	name           string
+type osdProperties struct {
+	crushHostname  string //it's the hostname if its nodes based OSD provision and the pvc name in case of PVC backed OSD provision
 	devices        []rookalpha.Device
 	pvc            v1.PersistentVolumeClaimVolumeSource
 	selection      rookalpha.Selection
@@ -258,27 +258,27 @@ func (c *Cluster) startProvisioning(config *provisionConfig) {
 	}
 
 	for _, volume := range c.ValidStorage.VolumeSources {
-		osdObject := OSDObject{
-			name:      volume.PersistentVolumeClaimSource.ClaimName,
-			pvc:       volume.PersistentVolumeClaimSource,
-			resources: volume.Resources,
-			placement: volume.Placement,
+		osdProps := osdProperties{
+			crushHostname: volume.PersistentVolumeClaimSource.ClaimName,
+			pvc:           volume.PersistentVolumeClaimSource,
+			resources:     volume.Resources,
+			placement:     volume.Placement,
 		}
 
 		// update the orchestration status of this pvc to the starting state
 		status := OrchestrationStatus{Status: OrchestrationStatusStarting, PvcBackedOSD: true}
-		if err := c.updateNodeStatus(osdObject.name, status); err != nil {
-			config.addError("failed to set orchestration starting status for pvc %s: %+v", osdObject.name, err)
+		if err := c.updateNodeStatus(osdProps.crushHostname, status); err != nil {
+			config.addError("failed to set orchestration starting status for pvc %s: %+v", osdProps.crushHostname, err)
 			continue
 		}
 
-		job, err := c.makeJob(osdObject)
+		job, err := c.makeJob(osdProps)
 		if err != nil {
-			message := fmt.Sprintf("failed to create prepare job for pvc %s: %v", osdObject.name, err)
+			message := fmt.Sprintf("failed to create prepare job for pvc %s: %v", osdProps.crushHostname, err)
 			config.addError(message)
 			status := OrchestrationStatus{Status: OrchestrationStatusCompleted, Message: message, PvcBackedOSD: true}
-			if err := c.updateNodeStatus(osdObject.name, status); err != nil {
-				config.addError("failed to update pvc %s status. %+v", osdObject.name, err)
+			if err := c.updateNodeStatus(osdProps.crushHostname, status); err != nil {
+				config.addError("failed to update pvc %s status. %+v", osdProps.crushHostname, err)
 				continue
 			}
 		}
@@ -287,11 +287,11 @@ func (c *Cluster) startProvisioning(config *provisionConfig) {
 			//if !c.runJob(job, pvc.ClaimName, config, "provision") {
 			status := OrchestrationStatus{
 				Status:       OrchestrationStatusCompleted,
-				Message:      fmt.Sprintf("failed to start osd provisioning on pvc %s", osdObject.name),
+				Message:      fmt.Sprintf("failed to start osd provisioning on pvc %s", osdProps.crushHostname),
 				PvcBackedOSD: true,
 			}
-			if err := c.updateNodeStatus(osdObject.name, status); err != nil {
-				config.addError("failed to update pvc %s status. %+v", osdObject.name, err)
+			if err := c.updateNodeStatus(osdProps.crushHostname, status); err != nil {
+				config.addError("failed to update pvc %s status. %+v", osdProps.crushHostname, err)
 			}
 		}
 
@@ -321,8 +321,8 @@ func (c *Cluster) startProvisioning(config *provisionConfig) {
 		// create the job that prepares osds on the node
 		storeConfig := osdconfig.ToStoreConfig(n.Config)
 		metadataDevice := osdconfig.MetadataDevice(n.Config)
-		osdObject := OSDObject{
-			name:           n.Name,
+		osdProps := osdProperties{
+			crushHostname:  n.Name,
 			devices:        n.Devices,
 			selection:      n.Selection,
 			resources:      n.Resources,
@@ -330,7 +330,7 @@ func (c *Cluster) startProvisioning(config *provisionConfig) {
 			metadataDevice: metadataDevice,
 			location:       n.Location,
 		}
-		job, err := c.makeJob(osdObject)
+		job, err := c.makeJob(osdProps)
 		if err != nil {
 			message := fmt.Sprintf("failed to create prepare job node %s: %v", n.Name, err)
 			config.addError(message)
@@ -372,8 +372,8 @@ func (c *Cluster) startOSDDaemonsOnPVC(pvcName string, config *provisionConfig, 
 	logger.Infof("starting %d osd daemons on node %s", len(osds), pvcName)
 	conf := make(map[string]string)
 	storeConfig := osdconfig.ToStoreConfig(conf)
-	osdObject := OSDObject{
-		name: pvcName,
+	osdProps := osdProperties{
+		crushHostname: pvcName,
 		pvc: v1.PersistentVolumeClaimVolumeSource{
 			ClaimName: pvcName,
 		},
@@ -382,9 +382,9 @@ func (c *Cluster) startOSDDaemonsOnPVC(pvcName string, config *provisionConfig, 
 	// start osds
 	for _, osd := range osds {
 		logger.Debugf("start osd %v", osd)
-		dp, err := c.makeDeployment(osdObject, osd)
+		dp, err := c.makeDeployment(osdProps, osd)
 		if err != nil {
-			errMsg := fmt.Sprintf("failed to create deployment for node %s: %v", osdObject.name, err)
+			errMsg := fmt.Sprintf("failed to create deployment for node %s: %v", osdProps.crushHostname, err)
 			config.addError(errMsg)
 			continue
 		}
@@ -393,7 +393,7 @@ func (c *Cluster) startOSDDaemonsOnPVC(pvcName string, config *provisionConfig, 
 		if err != nil {
 			if !errors.IsAlreadyExists(err) {
 				// we failed to create job, update the orchestration status for this node
-				logger.Warningf("failed to create osd deployment for node %s, osd %v: %+v", osdObject.name, osd, err)
+				logger.Warningf("failed to create osd deployment for node %s, osd %v: %+v", osdProps.crushHostname, osd, err)
 				continue
 			}
 			logger.Infof("deployment for osd %d already exists. updating if needed", osd.ID)
@@ -431,8 +431,8 @@ func (c *Cluster) startOSDDaemonsOnNode(nodeName string, config *provisionConfig
 	storeConfig := osdconfig.ToStoreConfig(n.Config)
 	metadataDevice := osdconfig.MetadataDevice(n.Config)
 
-	osdObject := OSDObject{
-		name:           n.Name,
+	osdProps := osdProperties{
+		crushHostname:  n.Name,
 		devices:        n.Devices,
 		selection:      n.Selection,
 		resources:      n.Resources,
@@ -444,7 +444,7 @@ func (c *Cluster) startOSDDaemonsOnNode(nodeName string, config *provisionConfig
 	// start osds
 	for _, osd := range osds {
 		logger.Debugf("start osd %v", osd)
-		dp, err := c.makeDeployment(osdObject, osd)
+		dp, err := c.makeDeployment(osdProps, osd)
 		if err != nil {
 			errMsg := fmt.Sprintf("failed to create deployment for node %s: %v", n.Name, err)
 			config.addError(errMsg)
@@ -545,14 +545,14 @@ func (c *Cluster) cleanupRemovedNode(config *provisionConfig, nodeName, crushNam
 
 	// trigger orchestration on the removed node by telling it not to use any storage at all.  note that the directories are still passed in
 	// so that the pod will be able to mount them and migrate data from them.
-	osdObject := OSDObject{
-		name:        nodeName,
-		devices:     []rookalpha.Device{},
-		selection:   rookalpha.Selection{DeviceFilter: "none"},
-		resources:   v1.ResourceRequirements{},
-		storeConfig: osdconfig.StoreConfig{},
+	osdProps := osdProperties{
+		crushHostname: nodeName,
+		devices:       []rookalpha.Device{},
+		selection:     rookalpha.Selection{DeviceFilter: "none"},
+		resources:     v1.ResourceRequirements{},
+		storeConfig:   osdconfig.StoreConfig{},
 	}
-	job, err := c.makeJob(osdObject)
+	job, err := c.makeJob(osdProps)
 	if err != nil {
 		message := fmt.Sprintf("failed to create prepare job node %s: %v", nodeName, err)
 		config.addError(message)

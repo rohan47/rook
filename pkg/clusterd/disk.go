@@ -58,6 +58,7 @@ func DiscoverDevices(executor exec.Executor) ([]*sys.LocalDisk, error) {
 		if disk == nil {
 			continue
 		}
+		disk = PopulateDeviceUdevInfo(d, executor, disk)
 		disks = append(disks, disk)
 	}
 
@@ -92,12 +93,6 @@ func PopulateDeviceInfo(d string, executor exec.Executor) *sys.LocalDisk {
 		}
 	}
 
-	/* udevInfo, err := sys.GetUdevInfo(d, executor)
-	if err != nil {
-		logger.Warningf("failed to get udev info for device %s: %+v", d, err)
-		continue
-	} */
-
 	disk := &sys.LocalDisk{Name: d, UUID: diskUUID}
 
 	if val, ok := diskProps["TYPE"]; ok {
@@ -122,7 +117,16 @@ func PopulateDeviceInfo(d string, executor exec.Executor) *sys.LocalDisk {
 		disk.Parent = val
 	}
 
-	/* // parse udev info output
+	return disk
+}
+
+func PopulateDeviceUdevInfo(d string, executor exec.Executor, disk *sys.LocalDisk) *sys.LocalDisk {
+	udevInfo, err := sys.GetUdevInfo(d, executor)
+	if err != nil {
+		logger.Warningf("failed to get udev info for device %s: %+v", d, err)
+		return disk
+	}
+	// parse udev info output
 	if val, ok := udevInfo["DEVLINKS"]; ok {
 		disk.DevLinks = val
 	}
@@ -147,7 +151,7 @@ func PopulateDeviceInfo(d string, executor exec.Executor) *sys.LocalDisk {
 
 	if val, ok := udevInfo["ID_WWN"]; ok {
 		disk.WWN = val
-	} */
+	}
 
 	return disk
 }
