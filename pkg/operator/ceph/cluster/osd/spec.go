@@ -335,6 +335,12 @@ func (c *Cluster) makeDeployment(osdObject OSDObject, osd OSDInfo) (*apps.Deploy
 					},
 				},
 				Spec: v1.PodSpec{
+					Affinity: &v1.Affinity{
+						NodeAffinity:    osdObject.placement.NodeAffinity,
+						PodAffinity:     osdObject.placement.PodAffinity,
+						PodAntiAffinity: osdObject.placement.PodAntiAffinity,
+					},
+					Tolerations:        osdObject.placement.Tolerations,
 					NodeSelector:       map[string]string{v1.LabelHostname: osdObject.name},
 					RestartPolicy:      v1.RestartPolicyAlways,
 					ServiceAccountName: serviceAccountName,
@@ -467,6 +473,12 @@ func (c *Cluster) provisionPodTemplateSpec(osdObject OSDObject, restart v1.Resta
 		RestartPolicy: restart,
 		Volumes:       volumes,
 		HostNetwork:   c.HostNetwork,
+		Affinity: &v1.Affinity{
+			PodAffinity:     osdObject.placement.PodAffinity,
+			NodeAffinity:    osdObject.placement.NodeAffinity,
+			PodAntiAffinity: osdObject.placement.PodAntiAffinity,
+		},
+		Tolerations: osdObject.placement.Tolerations,
 	}
 	if c.HostNetwork {
 		podSpec.DNSPolicy = v1.DNSClusterFirstWithHostNet
@@ -778,7 +790,7 @@ func makeStorageClassDeviceSetPVC(storageClassDeviceSetName, pvcStorageClassDevi
 
 func makeStorageClassDeviceSetPVCID(storageClassDeviceSetName string, setIndex, pvcIndex int) (pvcId, pvcLabelSelector string) {
 	pvcStorageClassDeviceSetPVCId := fmt.Sprintf("%s-%v-%v", storageClassDeviceSetName, setIndex, pvcIndex)
-	return pvcStorageClassDeviceSetPVCId, fmt.Sprintf("rook.ceph.io/StorageClassDeviceSetPVCId=%s", pvcStorageClassDeviceSetPVCId)
+	return pvcStorageClassDeviceSetPVCId, fmt.Sprintf("ceph.rook.io/StorageClassDeviceSetPVCId=%s", pvcStorageClassDeviceSetPVCId)
 }
 
 func makeStorageClassDeviceSetPVCLabel(storageClassDeviceSetName, pvcStorageClassDeviceSetPVCId string, pvcIndex, setIndex int) map[string]string {

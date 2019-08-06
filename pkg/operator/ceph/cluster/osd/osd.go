@@ -139,6 +139,7 @@ type OSDObject struct {
 	selection      rookalpha.Selection
 	resources      v1.ResourceRequirements
 	storeConfig    osdconfig.StoreConfig
+	placement      rookalpha.Placement
 	metadataDevice string
 	location       string
 }
@@ -258,8 +259,10 @@ func (c *Cluster) startProvisioning(config *provisionConfig) {
 
 	for _, volume := range c.ValidStorage.VolumeSources {
 		osdObject := OSDObject{
-			name: volume.PersistentVolumeClaimSource.ClaimName,
-			pvc:  volume.PersistentVolumeClaimSource,
+			name:      volume.PersistentVolumeClaimSource.ClaimName,
+			pvc:       volume.PersistentVolumeClaimSource,
+			resources: volume.Resources,
+			placement: volume.Placement,
 		}
 
 		// update the orchestration status of this pvc to the starting state

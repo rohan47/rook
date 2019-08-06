@@ -29,7 +29,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 )
 
-const osdOverPVCLabelKey = "rook.io/pvc"
+const osdOverPVCLabelKey = "ceph.rook.io/pvc"
 
 // GetDeploymentImage returns the version of the image running in the pod spec for the desired container
 func GetDeploymentImage(clientset kubernetes.Interface, namespace, name, container string) (string, error) {
