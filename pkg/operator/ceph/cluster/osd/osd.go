@@ -147,16 +147,13 @@ type osdProperties struct {
 // Start the osd management
 func (c *Cluster) Start() error {
 	config := newProvisionConfig()
+
+	// Parsing storageClassDeviceSets and parsing it to volume sources
 	c.DesiredStorage.VolumeSources = append(c.DesiredStorage.VolumeSources, c.prepareStorageClassDeviceSets(config)...)
-	validVolumeSources, err := k8sutil.GetValidVolumeSources(c.context.Clientset, c.Namespace, c.DesiredStorage.VolumeSources)
-	if err != nil {
-		return err
-	}
-	c.ValidStorage.VolumeSources = validVolumeSources
 
 	// Validate pod's memory if specified
 	// This is valid for both Filestore and Bluestore
-	err = opspec.CheckPodMemory(c.resources, cephOsdPodMinimumMemory)
+	err := opspec.CheckPodMemory(c.resources, cephOsdPodMinimumMemory)
 	if err != nil {
 		return fmt.Errorf("%v", err)
 	}
@@ -167,40 +164,43 @@ func (c *Cluster) Start() error {
 		logger.Warningf("useAllNodes is set to false and no nodes are specified, no OSD pods are going to be created")
 	}
 
-	if len(c.ValidStorage.VolumeSources) == 0 {
-		if c.DesiredStorage.UseAllNodes {
-			// Get the list of all nodes in the cluster. The placement settings will be applied below.
-			hostnameMap, err := k8sutil.GetNodeHostNames(c.context.Clientset)
-			if err != nil {
-				logger.Warningf("failed to get node hostnames: %v", err)
-				return err
-			}
-			c.DesiredStorage.Nodes = nil
-			for _, hostname := range hostnameMap {
-				storageNode := rookalpha.Node{
-					Name: hostname,
-				}
-				c.DesiredStorage.Nodes = append(c.DesiredStorage.Nodes, storageNode)
-			}
-			logger.Debugf("storage nodes: %+v", c.DesiredStorage.Nodes)
+	if c.DesiredStorage.UseAllNodes {
+		// Get the list of all nodes in the cluster. The placement settings will be applied below.
+		hostnameMap, err := k8sutil.GetNodeHostNames(c.context.Clientset)
+		if err != nil {
+			logger.Warningf("failed to get node hostnames: %v", err)
+			return err
 		}
-		// generally speaking, this finds nodes which are capable of running new osds
-		validNodes := k8sutil.GetValidNodes(c.DesiredStorage, c.context.Clientset, c.placement)
+		c.DesiredStorage.Nodes = nil
+		for _, hostname := range hostnameMap {
+			storageNode := rookalpha.Node{
+				Name: hostname,
+			}
+			c.DesiredStorage.Nodes = append(c.DesiredStorage.Nodes, storageNode)
+		}
+		logger.Debugf("storage nodes: %+v", c.DesiredStorage.Nodes)
+	}
+	// generally speaking, this finds nodes which are capable of running new osds
+	validNodes := k8sutil.GetValidNodes(c.DesiredStorage, c.context.Clientset, c.placement)
 
-		// no valid node is ready to run an osd
-		if len(validNodes) == 0 && len(c.ValidStorage.VolumeSources) == 0 {
-			logger.Warningf("no valid node available to run an osd in namespace %s. "+
-				"Rook will not create any new OSD nodes and will skip checking for removed nodes since "+
-				"removing all OSD nodes without destroying the Rook cluster is unlikely to be intentional", c.Namespace)
-			return nil
-		}
-		logger.Infof("%d of the %d storage nodes are valid", len(validNodes), len(c.DesiredStorage.Nodes))
-		c.ValidStorage = *c.DesiredStorage.DeepCopy()
-		c.ValidStorage.Nodes = validNodes
-	} else {
-		c.ValidStorage.Nodes = nil
+	// Filtering out valid volume sources
+	validVolumeSources, err := k8sutil.GetValidVolumeSources(c.context.Clientset, c.Namespace, c.DesiredStorage.VolumeSources)
+	if err != nil {
+		return err
 	}
 
+	// no valid node is ready to run an osd
+	if len(validNodes) == 0 && len(validVolumeSources) == 0 {
+		logger.Warningf("no valid volumeSource or node available to run an osd in namespace %s. "+
+			"Rook will not create any new OSD nodes and will skip checking for removed nodes since "+
+			"removing all OSD nodes without destroying the Rook cluster is unlikely to be intentional", c.Namespace)
+		return nil
+	}
+	logger.Infof("%d of the %d storage nodes are valid", len(validNodes), len(c.DesiredStorage.Nodes))
+	logger.Infof("%d of the %d volumeSources are valid", len(validVolumeSources), len(c.DesiredStorage.VolumeSources))
+	c.ValidStorage = *c.DesiredStorage.DeepCopy()
+	c.ValidStorage.Nodes = validNodes
+	c.ValidStorage.VolumeSources = validVolumeSources
 	// start the jobs to provision the OSD devices and directories
 
 	logger.Infof("start provisioning the osds on nodes, if needed")
@@ -210,10 +210,8 @@ func (c *Cluster) Start() error {
 	c.completeProvision(config)
 
 	// handle the removed nodes and rebalance the PGs
-	if len(c.ValidStorage.VolumeSources) == 0 {
-		logger.Infof("checking if any nodes were removed")
-		c.handleRemovedNodes(config)
-	}
+	logger.Infof("checking if any nodes were removed")
+	c.handleRemovedNodes(config)
 
 	if len(config.errorMessages) > 0 {
 		return fmt.Errorf("%d failures encountered while running osds in namespace %s: %+v",
