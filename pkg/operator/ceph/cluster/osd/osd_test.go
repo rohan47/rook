@@ -30,6 +30,7 @@ import (
 	"github.com/rook/rook/pkg/operator/k8sutil"
 	exectest "github.com/rook/rook/pkg/util/exec/test"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	apps "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	v1 "k8s.io/api/core/v1"
@@ -247,7 +248,7 @@ func TestGetIDFromDeployment(t *testing.T) {
 }
 
 func TestDiscoverOSDs(t *testing.T) {
-	/* clusterInfo := &cephconfig.ClusterInfo{
+	clusterInfo := &cephconfig.ClusterInfo{
 		CephVersion: cephver.Nautilus,
 	}
 	c := New(clusterInfo, &clusterd.Context{}, "ns", "myversion", cephv1.CephVersionSpec{},
@@ -256,17 +257,29 @@ func TestDiscoverOSDs(t *testing.T) {
 	node2 := "n2"
 
 	osd1 := OSDInfo{ID: 0, IsDirectory: true, IsFileStore: true, DataPath: "/rook/path"}
-	d1, err := c.makeDeployment(node1, rookalpha.Selection{}, v1.ResourceRequirements{}, config.StoreConfig{}, "", "", osd1)
+	osdProp := osdProperties{
+		crushHostname: node1,
+		selection:     rookalpha.Selection{},
+		resources:     v1.ResourceRequirements{},
+		storeConfig:   config.StoreConfig{},
+	}
+	d1, err := c.makeDeployment(osdProp, osd1)
 	assert.Nil(t, err)
 	assert.NotNil(t, d1)
 
 	osd2 := OSDInfo{ID: 101, IsDirectory: true, IsFileStore: true, DataPath: "/rook/path"}
-	d2, err := c.makeDeployment(node1, rookalpha.Selection{}, v1.ResourceRequirements{}, config.StoreConfig{}, "", "", osd2)
+	d2, err := c.makeDeployment(osdProp, osd2)
 	assert.Nil(t, err)
 	assert.NotNil(t, d2)
 
+	osdProp2 := osdProperties{
+		crushHostname: node2,
+		selection:     rookalpha.Selection{},
+		resources:     v1.ResourceRequirements{},
+		storeConfig:   config.StoreConfig{},
+	}
 	osd3 := OSDInfo{ID: 23, IsDirectory: true, IsFileStore: true, DataPath: "/rook/path"}
-	d3, err := c.makeDeployment(node2, rookalpha.Selection{}, v1.ResourceRequirements{}, config.StoreConfig{}, "", "", osd3)
+	d3, err := c.makeDeployment(osdProp2, osd3)
 	assert.Nil(t, err)
 	assert.NotNil(t, d3)
 
@@ -286,7 +299,7 @@ func TestDiscoverOSDs(t *testing.T) {
 	}
 
 	assert.Equal(t, 1, len(discovered[node2]))
-	assert.Equal(t, "rook-ceph-osd-23", discovered[node2][0].Name) */
+	assert.Equal(t, "rook-ceph-osd-23", discovered[node2][0].Name)
 }
 
 func TestAddNodeFailure(t *testing.T) {
@@ -338,4 +351,8 @@ func TestAddNodeFailure(t *testing.T) {
 	// verify orchestration failed (because the operator failed to create a job)
 	assert.True(t, startCompleted)
 	assert.NotNil(t, startErr)
+}
+
+func getOSDProperties() {
+
 }

@@ -128,7 +128,7 @@ func Provision(context *clusterd.Context, agent *OsdAgent) error {
 	logger.Infof("creating and starting the osds")
 
 	// determine the set of devices that can/should be used for OSDs.
-	devices, err := getAvailableDevices(context, agent.devices, agent.metadataDevice)
+	devices, err := getAvailableDevices(context, agent.devices, agent.metadataDevice, agent.pvcBacked)
 	if err != nil {
 		return fmt.Errorf("failed to get available devices. %+v", err)
 	}
@@ -195,7 +195,7 @@ func Provision(context *clusterd.Context, agent *OsdAgent) error {
 	return nil
 }
 
-func getAvailableDevices(context *clusterd.Context, desiredDevices []DesiredDevice, metadataDevice string) (*DeviceOsdMapping, error) {
+func getAvailableDevices(context *clusterd.Context, desiredDevices []DesiredDevice, metadataDevice string, pvcBacked bool) (*DeviceOsdMapping, error) {
 
 	available := &DeviceOsdMapping{Entries: map[string]*DeviceOsdIDEntry{}}
 
@@ -208,7 +208,7 @@ func getAvailableDevices(context *clusterd.Context, desiredDevices []DesiredDevi
 		if device.Type == sys.PartType {
 			continue
 		}
-		partCount, ownPartitions, fs, err := sys.CheckIfDeviceAvailable(context.Executor, device.Name)
+		partCount, ownPartitions, fs, err := sys.CheckIfDeviceAvailable(context.Executor, device.Name, pvcBacked)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get device %s info. %+v", device.Name, err)
 		}

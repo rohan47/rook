@@ -25,12 +25,24 @@ import (
 	//"github.com/rook/rook/pkg/clusterd"
 	//cephconfig "github.com/rook/rook/pkg/daemon/ceph/config"
 	//"github.com/rook/rook/pkg/operator/ceph/cluster/osd/config"
+	cephv1 "github.com/rook/rook/pkg/apis/ceph.rook.io/v1"
+	rookalpha "github.com/rook/rook/pkg/apis/rook.io/v1alpha2"
+	"github.com/rook/rook/pkg/clusterd"
+	cephconfig "github.com/rook/rook/pkg/daemon/ceph/config"
+	"github.com/rook/rook/pkg/operator/ceph/cluster/osd/config"
 	cephver "github.com/rook/rook/pkg/operator/ceph/version"
+	"github.com/rook/rook/pkg/operator/k8sutil"
+	exectest "github.com/rook/rook/pkg/util/exec/test"
+	v1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes/fake"
+
 	//"github.com/rook/rook/pkg/operator/k8sutil"
 	//exectest "github.com/rook/rook/pkg/util/exec/test"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	//"github.com/stretchr/testify/require"
-	v1 "k8s.io/api/core/v1"
 	// "k8s.io/apimachinery/pkg/api/resource"
 	//metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	//"k8s.io/client-go/kubernetes/fake"
@@ -62,7 +74,7 @@ func TestDaemonset(t *testing.T) {
 }
 
 func testPodDevices(t *testing.T, dataDir, deviceName string, allDevices bool) {
-	/* storageSpec := rookalpha.StorageScopeSpec{
+	storageSpec := rookalpha.StorageScopeSpec{
 		Selection: rookalpha.Selection{UseAllDevices: &allDevices, DeviceFilter: deviceName},
 		Nodes:     []rookalpha.Node{{Name: "node1"}},
 	}
@@ -88,7 +100,14 @@ func testPodDevices(t *testing.T, dataDir, deviceName string, allDevices bool) {
 		ID: 0,
 	}
 
-	deployment, err := c.makeDeployment(n.Name, n.Selection, v1.ResourceRequirements{}, config.StoreConfig{}, "", n.Location, osd)
+	osdProp := osdProperties{
+		crushHostname: n.Name,
+		selection:     n.Selection,
+		resources:     v1.ResourceRequirements{},
+		storeConfig:   config.StoreConfig{},
+		location:      n.Location,
+	}
+	deployment, err := c.makeDeployment(osdProp, osd)
 	assert.Nil(t, err)
 	assert.NotNil(t, deployment)
 	assert.Equal(t, "rook-ceph-osd-0", deployment.Name)
@@ -125,7 +144,7 @@ func testPodDevices(t *testing.T, dataDir, deviceName string, allDevices bool) {
 	cont := deployment.Spec.Template.Spec.Containers[0]
 	assert.Equal(t, cephVersion.Image, cont.Image)
 	assert.Equal(t, 5, len(cont.VolumeMounts))
-	assert.Equal(t, "ceph-osd", cont.Command[0]) */
+	assert.Equal(t, "ceph-osd", cont.Command[0])
 }
 
 func verifyEnvVar(t *testing.T, envVars []v1.EnvVar, expectedName, expectedValue string, expectedFound bool) {
@@ -142,7 +161,7 @@ func verifyEnvVar(t *testing.T, envVars []v1.EnvVar, expectedName, expectedValue
 }
 
 func TestStorageSpecDevicesAndDirectories(t *testing.T) {
-	/* storageSpec := rookalpha.StorageScopeSpec{
+	storageSpec := rookalpha.StorageScopeSpec{
 		Selection: rookalpha.Selection{
 			Directories: []rookalpha.Directory{{Path: "/rook/dir2"}},
 		},
@@ -170,7 +189,16 @@ func TestStorageSpecDevicesAndDirectories(t *testing.T) {
 		IsDirectory: true,
 		DataPath:    "/my/root/path/osd1",
 	}
-	deployment, err := c.makeDeployment(n.Name, n.Selection, v1.ResourceRequirements{}, config.StoreConfig{}, "", n.Location, osd)
+
+	osdProp := osdProperties{
+		crushHostname: n.Name,
+		selection:     n.Selection,
+		resources:     v1.ResourceRequirements{},
+		storeConfig:   config.StoreConfig{},
+		location:      n.Location,
+	}
+
+	deployment, err := c.makeDeployment(osdProp, osd)
 	assert.NotNil(t, deployment)
 	assert.Nil(t, err)
 	// pod spec should have a volume for the given dir in the main container and the init container
@@ -199,7 +227,7 @@ func TestStorageSpecDevicesAndDirectories(t *testing.T) {
 		IsDirectory: true,
 		DataPath:    "/var/lib/rook/osd1",
 	}
-	deployment, err = c.makeDeployment(n.Name, n.Selection, v1.ResourceRequirements{}, config.StoreConfig{}, "", n.Location, osd)
+	deployment, err = c.makeDeployment(osdProp, osd)
 	assert.NotNil(t, deployment)
 	assert.Nil(t, err)
 	// pod spec should have a volume for the given dir in the main container and the init container
@@ -219,11 +247,11 @@ func TestStorageSpecDevicesAndDirectories(t *testing.T) {
 	assert.Equal(t, "/var/lib/rook", initCont.VolumeMounts[0].MountPath)
 	assert.Equal(t, "/etc/ceph", initCont.VolumeMounts[1].MountPath)
 	assert.Equal(t, "/var/log/ceph", initCont.VolumeMounts[2].MountPath)
-	assert.Equal(t, "/etc/rook/config", initCont.VolumeMounts[3].MountPath) */
+	assert.Equal(t, "/etc/rook/config", initCont.VolumeMounts[3].MountPath)
 }
 
 func TestStorageSpecConfig(t *testing.T) {
-	/* storageSpec := rookalpha.StorageScopeSpec{
+	storageSpec := rookalpha.StorageScopeSpec{
 		Nodes: []rookalpha.Node{
 			{
 				Name:     "node1",
@@ -263,7 +291,16 @@ func TestStorageSpecConfig(t *testing.T) {
 	storeConfig := config.ToStoreConfig(storageSpec.Nodes[0].Config)
 	metadataDevice := config.MetadataDevice(storageSpec.Nodes[0].Config)
 
-	job, err := c.makeJob(n.Name, n.Devices, n.Selection, c.DesiredStorage.Nodes[0].Resources, storeConfig, metadataDevice, n.Location)
+	osdProp := osdProperties{
+		crushHostname:  n.Name,
+		devices:        n.Devices,
+		selection:      n.Selection,
+		resources:      c.DesiredStorage.Nodes[0].Resources,
+		storeConfig:    storeConfig,
+		metadataDevice: metadataDevice,
+		location:       n.Location,
+	}
+	job, err := c.makeJob(osdProp)
 	assert.NotNil(t, job)
 	assert.Nil(t, err)
 	assert.Equal(t, "rook-ceph-osd-prepare-node1", job.ObjectMeta.Name)
@@ -287,11 +324,11 @@ func TestStorageSpecConfig(t *testing.T) {
 	discoveredConfig := getConfigFromContainer(container)
 	assert.Equal(t, n.Config, discoveredConfig)
 	discoveredDirs := getDirectoriesFromContainer(container)
-	assert.Equal(t, n.Directories, discoveredDirs) */
+	assert.Equal(t, n.Directories, discoveredDirs)
 }
 
 func TestHostNetwork(t *testing.T) {
-	/* storageSpec := rookalpha.StorageScopeSpec{
+	storageSpec := rookalpha.StorageScopeSpec{
 		Nodes: []rookalpha.Node{
 			{
 				Name:     "node1",
@@ -317,13 +354,23 @@ func TestHostNetwork(t *testing.T) {
 	osd := OSDInfo{
 		ID: 0,
 	}
-	r, err := c.makeDeployment(n.Name, n.Selection, v1.ResourceRequirements{}, config.StoreConfig{}, "", n.Location, osd)
+
+	osdProp := osdProperties{
+		crushHostname: n.Name,
+		devices:       n.Devices,
+		selection:     n.Selection,
+		resources:     c.DesiredStorage.Nodes[0].Resources,
+		storeConfig:   config.StoreConfig{},
+		location:      n.Location,
+	}
+
+	r, err := c.makeDeployment(osdProp, osd)
 	assert.NotNil(t, r)
 	assert.Nil(t, err)
 
 	assert.Equal(t, "rook-ceph-osd-0", r.ObjectMeta.Name)
 	assert.Equal(t, true, r.Spec.Template.Spec.HostNetwork)
-	assert.Equal(t, v1.DNSClusterFirstWithHostNet, r.Spec.Template.Spec.DNSPolicy) */
+	assert.Equal(t, v1.DNSClusterFirstWithHostNet, r.Spec.Template.Spec.DNSPolicy)
 }
 
 func TestOsdOnSDNFlag(t *testing.T) {

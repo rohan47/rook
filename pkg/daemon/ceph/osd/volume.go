@@ -60,6 +60,7 @@ func (a *OsdAgent) configureCVDevices(context *clusterd.Context, devices *Device
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate osd keyring. %+v", err)
 	}
+	logger.Infof("SP here - %+v", a.pvcBacked)
 	if a.pvcBacked {
 		if lv, err = a.initializeBlockPVC(context, devices); err != nil {
 			return nil, fmt.Errorf("failed to initialize devices. %+v", err)
@@ -203,6 +204,9 @@ func (a *OsdAgent) initializeDevices(context *clusterd.Context, devices *DeviceO
 					"--report",
 				}...)
 
+				logger.Infof("Base command - %+v", baseCommand)
+				logger.Infof("immediateReportArgs - %+v", baseCommand)
+				logger.Infof("immediateExecuteArgs - %+v", immediateExecuteArgs)
 				if err := context.Executor.ExecuteCommand(false, "", baseCommand, immediateReportArgs...); err != nil {
 					return fmt.Errorf("failed ceph-volume report. %+v", err) // fail return here as validation provided by ceph-volume
 				}
@@ -269,8 +273,16 @@ func sanitizeOSDsPerDevice(count int) string {
 	return strconv.Itoa(count)
 }
 
-func getCephVolumeSupported(context *clusterd.Context) (bool, error) {
-	_, err := context.Executor.ExecuteCommandWithOutput(false, "", cephVolumeCmd, "lvm", "prepare")
+func getCephVolumeSupported(context *clusterd.Context, pvcBacked bool) (bool, error) {
+	var args []string
+	if pvcBacked {
+		args = append(args, "lvm", "prepare") //Don't use batch command when using PVC block device
+	} else {
+		args = append(args, "lvm", "batch", "--prepare")
+	}
+
+	_, err := context.Executor.ExecuteCommandWithOutput(false, "", cephVolumeCmd, args...)
+
 	if err != nil {
 		if cmdErr, ok := err.(*exec.CommandError); ok {
 			exitStatus := cmdErr.ExitStatus()

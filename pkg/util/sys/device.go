@@ -92,15 +92,19 @@ func ListDevices(executor exec.Executor) ([]string, error) {
 }
 
 func GetDevicePartitions(device string, executor exec.Executor) (partitions []Partition, unusedSpace uint64, err error) {
-	deviceName := device
-	devicePath := strings.Split(device, "/")
-	if len(devicePath) == 1 {
-		device = fmt.Sprintf("/dev/%s", device)
+
+	var devicePath string
+	splitDevicePath := strings.Split(device, "/")
+	if len(splitDevicePath) == 1 {
+		devicePath = fmt.Sprintf("/dev/%s", device) //device path for OSD on devices.
+	} else {
+		devicePath = device //use the exact device path (like /mnt/<pvc-name>) in case of PVC block device
 	}
 
-	cmd := fmt.Sprintf("lsblk %s", device)
-	output, err := executor.ExecuteCommandWithOutput(false, cmd, "lsblk", device,
+	cmd := fmt.Sprintf("lsblk %s", devicePath)
+	output, err := executor.ExecuteCommandWithOutput(false, cmd, "lsblk", devicePath,
 		"--bytes", "--pairs", "--output", "NAME,SIZE,TYPE,PKNAME")
+	logger.Infof("Output: %+v", output)
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to get device %s partitions. %+v", device, err)
 	}
@@ -112,11 +116,12 @@ func GetDevicePartitions(device string, executor exec.Executor) (partitions []Pa
 		name := props["NAME"]
 		if name == device {
 			// found the main device
+			logger.Info("Device found - ", name)
 			deviceSize, err = strconv.ParseUint(props["SIZE"], 10, 64)
 			if err != nil {
 				return nil, 0, fmt.Errorf("failed to get device %s size. %+v", device, err)
 			}
-		} else if (props["PKNAME"] == device || props["PKNAME"] == deviceName) && props["TYPE"] == PartType {
+		} else if props["PKNAME"] == device && props["TYPE"] == PartType {
 			// found a partition
 			p := Partition{Name: name}
 			p.Size, err = strconv.ParseUint(props["SIZE"], 10, 64)
@@ -314,7 +319,7 @@ func UnmountDevice(devicePath string, executor exec.Executor) error {
 // the number of partitions, whether Rook has created partitions on the device in the past
 // possibly from the same or a previous cluster, the filesystem found, or an err if failed
 // to retrieve the properties.
-func CheckIfDeviceAvailable(executor exec.Executor, name string) (int, bool, string, error) {
+func CheckIfDeviceAvailable(executor exec.Executor, name string, pvcBacked bool) (int, bool, string, error) {
 	ownPartitions := true
 	partitions, _, err := GetDevicePartitions(name, executor)
 	if err != nil {
@@ -325,13 +330,16 @@ func CheckIfDeviceAvailable(executor exec.Executor, name string) (int, bool, str
 		ownPartitions = false
 	}
 
-	// check if there is a file system on the device
-	/* devFS, err := GetDeviceFilesystems(name, executor)
-	if err != nil {
-		return 0, false, "", fmt.Errorf("failed to get device %s filesystem: %+v", name, err)
-	} */
-	devFS := ""
-
+	var devFS string
+	if !pvcBacked {
+		// check if there is a file system on the device
+		devFS, err = GetDeviceFilesystems(name, executor)
+		if err != nil {
+			return 0, false, "", fmt.Errorf("failed to get device %s filesystem: %+v", name, err)
+		}
+	} else {
+		devFS = "" //Not checking Filesystem in case of PVC block device.
+	}
 	return partCount, ownPartitions, devFS, nil
 }
 
