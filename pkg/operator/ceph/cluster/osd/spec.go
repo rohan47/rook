@@ -50,6 +50,7 @@ const (
 	pvcBackedOSDVarName                 = "ROOK_PVC_BACKED_OSD"
 	rookBinariesMountPath               = "/rook"
 	rookBinariesVolumeName              = "rook-binaries"
+	blockPVCMapperInitContainer         = "blkdevmapper"
 	osdMemoryTargetSafetyFactor float32 = 0.8
 )
 
@@ -282,8 +283,7 @@ func (c *Cluster) makeDeployment(osdProps osdProperties, osd OSDInfo) (*apps.Dep
 	}
 
 	if osdProps.pvc.ClaimName != "" {
-		devMount := v1.VolumeMount{Name: fmt.Sprintf("%s-bridge", osdProps.pvc.ClaimName), MountPath: "/mnt"}
-		volumeMounts = append(volumeMounts, devMount)
+		volumeMounts = append(volumeMounts, getPvcOSDBridgeMount(osdProps.pvc.ClaimName))
 		envVars = append(envVars, pvcBackedOSDEnvVar("true"))
 	}
 
@@ -510,7 +510,7 @@ func (c *Cluster) provisionPodTemplateSpec(osdProps osdProperties, restart v1.Re
 
 func (c *Cluster) getPVCInitContainer(pvc v1.PersistentVolumeClaimVolumeSource) v1.Container {
 	return v1.Container{
-		Name:  "blkdevmapper",
+		Name:  blockPVCMapperInitContainer,
 		Image: c.cephVersion.Image,
 		Args:  []string{"cp", "-a", fmt.Sprintf("/%s", pvc.ClaimName), fmt.Sprintf("/mnt/%s", pvc.ClaimName)},
 		VolumeDevices: []v1.VolumeDevice{
@@ -626,8 +626,7 @@ func (c *Cluster) provisionOSDContainer(osdProps osdProperties, copyBinariesMoun
 	}
 
 	if osdProps.pvc.ClaimName != "" {
-		devMount := v1.VolumeMount{Name: fmt.Sprintf("%s-bridge", osdProps.pvc.ClaimName), MountPath: "/mnt"}
-		volumeMounts = append(volumeMounts, devMount)
+		volumeMounts = append(volumeMounts, getPvcOSDBridgeMount(osdProps.pvc.ClaimName))
 		envVars = append(envVars, dataDevicesEnvVar(strings.Join([]string{fmt.Sprintf("/mnt/%s", osdProps.pvc.ClaimName)}, ",")))
 		envVars = append(envVars, pvcBackedOSDEnvVar("true"))
 	}
@@ -675,6 +674,10 @@ func (c *Cluster) provisionOSDContainer(osdProps osdProperties, copyBinariesMoun
 	}
 
 	return osdProvisionContainer
+}
+
+func getPvcOSDBridgeMount(claimName string) v1.VolumeMount {
+	return v1.VolumeMount{Name: fmt.Sprintf("%s-bridge", claimName), MountPath: "/mnt"}
 }
 
 func (c *Cluster) skipVolumeForDirectory(path string) bool {

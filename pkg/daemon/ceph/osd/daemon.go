@@ -53,15 +53,14 @@ func StartOSD(context *clusterd.Context, osdType, osdID, osdUUID string, pvcBack
 			return fmt.Errorf("sed failure, %+v", err) // fail return here as validation provided by ceph-volume
 		}
 
-		context.Executor.ExecuteCommand(false, "", "stdbuf", "-oL", "/sbin/vgchange", "-an")
+		context.Executor.ExecuteCommand(false, "", "/sbin/vgchange", "-an")
 
-		context.Executor.ExecuteCommand(false, "", "stdbuf", "-oL", "/sbin/vgchange", "-ay")
+		context.Executor.ExecuteCommand(false, "", "/sbin/vgchange", "-ay")
 	}
 
 	// activate the osd with ceph-volume
 	storeFlag := "--" + osdType
 	if err := context.Executor.ExecuteCommand(false, "", "stdbuf", "-oL", "ceph-volume", "lvm", "activate", "--no-systemd", storeFlag, osdID, osdUUID); err != nil {
-		//time.Sleep(5 * time.Minute)
 		return fmt.Errorf("failed to activate osd. %+v", err)
 	}
 
@@ -113,9 +112,10 @@ func Provision(context *clusterd.Context, agent *OsdAgent) error {
 	logger.Infof("discovering hardware")
 	var rawDevices []*sys.LocalDisk
 	if agent.pvcBacked {
-		for _, d := range agent.devices {
-			rawDevices = append(rawDevices, clusterd.PopulateDeviceInfo(d.Name, context.Executor))
+		if len(agent.devices) > 1 {
+			return fmt.Errorf("more than one desired device found in case of PVC backed OSDs. we expect exactly one device")
 		}
+		rawDevices = append(rawDevices, clusterd.PopulateDeviceInfo(agent.devices[0].Name, context.Executor))
 	} else {
 		rawDevices, err = clusterd.DiscoverDevices(context.Executor)
 		if err != nil {
