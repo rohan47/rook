@@ -149,10 +149,17 @@ func (a *OsdAgent) removeDirs(context *clusterd.Context, removedDirs map[string]
 
 func (a *OsdAgent) configureDevices(context *clusterd.Context, devices *DeviceOsdMapping) ([]oposd.OSDInfo, error) {
 
-	cvSupported, err := getCephVolumeSupported(context, a.pvcBacked)
-	if err != nil {
-		logger.Errorf("failed to detect if ceph-volume is available. %+v", err)
+	var cvSupported bool
+	var err error
+	if a.pvcBacked {
+		cvSupported = true //ceph-volume is always supported when OSD is backed by PVC
+	} else {
+		cvSupported, err = getCephVolumeSupported(context)
+		if err != nil {
+			logger.Errorf("failed to detect if ceph-volume is available. %+v", err)
+		}
 	}
+
 	if a.metadataDevice != "" {
 		// ceph-volume still is work in progress for accepting fast devices for the metadata
 		logger.Warningf("ceph-volume metadata support is experimental. osd provision might fail if vg on %s does not have enough space", a.metadataDevice)

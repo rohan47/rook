@@ -100,11 +100,11 @@ func GetValidVolumeSources(clientset kubernetes.Interface, namespace string, vol
 		return validVolumes, fmt.Errorf("nil clientset received")
 	}
 	for _, vol := range volumeSources {
-		osdDeployments, err := clientset.AppsV1().Deployments(namespace).List(metav1.ListOptions{LabelSelector: osdOverPVCLabelKey + "=" + vol.Name})
+		osdDeployments, err := clientset.AppsV1().Deployments(namespace).List(metav1.ListOptions{LabelSelector: osdOverPVCLabelKey + "=" + vol.PersistentVolumeClaimSource.ClaimName})
 		if err != nil {
 			return validVolumes, err
 		}
-		osdPrepareJob, err := clientset.BatchV1().Jobs(namespace).List(metav1.ListOptions{LabelSelector: osdOverPVCLabelKey + "=" + vol.Name})
+		osdPrepareJob, err := clientset.BatchV1().Jobs(namespace).List(metav1.ListOptions{LabelSelector: osdOverPVCLabelKey + "=" + vol.PersistentVolumeClaimSource.ClaimName})
 		if err != nil {
 			return validVolumes, err
 		}

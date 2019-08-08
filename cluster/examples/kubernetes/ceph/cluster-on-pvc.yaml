@@ -70,5 +70,3 @@ spec:
           volumeMode: Block
           accessModes:
             - ReadWriteOnce
-    useAllNodes: true
-    useAllDevices: true

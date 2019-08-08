@@ -352,7 +352,3 @@ func TestAddNodeFailure(t *testing.T) {
 	assert.True(t, startCompleted)
 	assert.NotNil(t, startErr)
 }
-
-func getOSDProperties() {
-
-}

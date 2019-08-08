@@ -473,19 +473,11 @@ func (c *Cluster) provisionPodTemplateSpec(osdProps osdProperties, restart v1.Re
 		RestartPolicy: restart,
 		Volumes:       volumes,
 		HostNetwork:   c.HostNetwork,
-		Affinity: &v1.Affinity{
-			PodAffinity:     osdProps.placement.PodAffinity,
-			NodeAffinity:    osdProps.placement.NodeAffinity,
-			PodAntiAffinity: osdProps.placement.PodAntiAffinity,
-		},
-		Tolerations: osdProps.placement.Tolerations,
 	}
 	if c.HostNetwork {
 		podSpec.DNSPolicy = v1.DNSClusterFirstWithHostNet
 	}
-	if osdProps.pvc.ClaimName == "" {
-		c.placement.ApplyToPodSpec(&podSpec)
-	}
+	c.placement.ApplyToPodSpec(&podSpec)
 
 	podMeta := metav1.ObjectMeta{
 		Name: appName,

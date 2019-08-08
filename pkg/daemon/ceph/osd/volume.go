@@ -273,15 +273,9 @@ func sanitizeOSDsPerDevice(count int) string {
 	return strconv.Itoa(count)
 }
 
-func getCephVolumeSupported(context *clusterd.Context, pvcBacked bool) (bool, error) {
-	var args []string
-	if pvcBacked {
-		args = append(args, "lvm", "prepare") //Don't use batch command when using PVC block device
-	} else {
-		args = append(args, "lvm", "batch", "--prepare")
-	}
+func getCephVolumeSupported(context *clusterd.Context) (bool, error) {
 
-	_, err := context.Executor.ExecuteCommandWithOutput(false, "", cephVolumeCmd, args...)
+	_, err := context.Executor.ExecuteCommandWithOutput(false, "", cephVolumeCmd, "lvm", "batch", "--prepare")
 
 	if err != nil {
 		if cmdErr, ok := err.(*exec.CommandError); ok {
