@@ -9,7 +9,8 @@ Rook allows creation and customization of storage clusters through the custom re
 
 ## Sample
 
-To get you started, here is a simple example of a CRD to configure a Ceph cluster with all nodes and all devices. More examples are included [later in this doc](#samples).
+To get you started, here is a simple example of a CRD to configure a Ceph cluster with all nodes and all devices. Next example is where Mons and OSDs are backed by PVCs.
+More examples are included [later in this doc](#samples).
 
 **NOTE** In addition to your CephCluster object, you need to create the namespace, service accounts, and RBAC rules for the namespace you are going to create the CephCluster in.
 These resources are defined in the example `common.yaml`.
@@ -31,6 +32,40 @@ spec:
   storage:
     useAllNodes: true
     useAllDevices: true
+```
+
+```yaml
+apiVersion: ceph.rook.io/v1
+kind: CephCluster
+metadata:
+  name: rook-ceph
+  namespace: rook-ceph
+spec:
+  dataDirHostPath: /var/lib/rook
+  mon:
+    count: 3
+    volumeClaimTemplate:
+      spec:
+        storageClassName: local-storage
+        resources:
+          requests:
+            storage: 10Gi
+  storage:
+   storageClassDeviceSets:
+    - name: set1
+      count: 3
+      volumeClaimTemplates:
+      - metadata:
+          name: data
+        spec:
+          resources:
+            requests:
+              storage: 10Gi
+          # IMPORTANT: Change the storage class depending on your environment (e.g. local-storage, gp2)
+          storageClassName: local-storage
+          volumeMode: Block
+          accessModes:
+            - ReadWriteOnce
 ```
 
 ## Settings
@@ -79,6 +114,7 @@ For more details on the mons and when to choose a number other than `3`, see the
   See [node settings](#node-settings) below.
   - `config`: Config settings applied to all OSDs on the node unless overridden by `devices` or `directories`. See the [config settings](#osd-configuration-settings) below.
   - [storage selection settings](#storage-selection-settings)
+  - [Storage Class Device Sets](#storage-class-device-sets)
 
 ### Mon Settings
 
@@ -152,7 +188,21 @@ Below are the settings available, both at the cluster and individual node level,
   - `path`: The path on disk of the directory (e.g., `/rook/storage-dir`).
   - `config`: Directory-specific config settings. See the [config settings](#osd-configuration-settings) below.
 - `location`: Location information about the cluster to help with data placement, such as region or data center.  This is directly fed into the underlying Ceph CRUSH map. The type of this field is `string`. For example, to add datacenter location information, set this field to `rack=rack1`.  More information on CRUSH maps can be found in the [ceph docs](http://docs.ceph.com/docs/master/rados/operations/crush-map/).
+- `storageClassDeviceSets`: Explained in [Storage Class Device Sets](#storage-class-device-sets)
 
+
+### Storage Class Device Sets (SCDS)
+The following are the settings for Storage Class Device Sets which can be configured to create OSDs that are backed by block mode PVs.
+
+- `name`: A name for the set.
+- `count`: The number of devices in the set.
+- `resources`: The CPU and RAM requests/limits for the devices. Default is no resource requests.
+- `placement`: The placement criteria for the devices. Default is no placement criteria.
+- `volumeClaimTemplates`: A list of PVC templates to use for provisioning the underlying storage devices.
+  - `resources.requests.storage`: The desired capacity for the underlying storage devices.
+  - `storageClassName`: The StorageClass to provision PVCs from. Default would be to use the cluster-default StorageClass.
+  - `volumeMode`: The volume mode to be set for the PVC. Which should be Block
+  - `accessModes`: The access mode for the PVC to be bound by OSD.
 
 ### OSD Configuration Settings
 The following storage selection settings are specific to Ceph and do not apply to other backends. All variables are key-value pairs represented as strings.
@@ -524,4 +574,67 @@ spec:
       databaseSizeMB: "1024" # this value can be removed for environments with normal sized disks (100 GB or larger)
       journalSizeMB: "1024"  # this value can be removed for environments with normal sized disks (20 GB or larger)
       osdsPerDevice: "1"
+```
+### Using StorageClassDeviceSets
+
+In the CRD specification below 3 OSDs are created each using a 10Gi PVC and having a specific placement and resource values created by Rook using the `fast-disks` storage class.
+
+```yaml
+apiVersion: ceph.rook.io/v1
+kind: CephCluster
+metadata:
+  name: rook-ceph
+  namespace: rook-ceph
+spec:
+  dataDirHostPath: /var/lib/rook
+  mon:
+    count: 3
+    allowMultiplePerNode: false
+    volumeClaimTemplate:
+      spec:
+        storageClassName: fast-disks
+        resources:
+          requests:
+            storage: 10Gi
+  cephVersion:
+    image: ceph/ceph:v14.2.1-20190430
+    allowUnsupported: false
+  dashboard:
+    enabled: true
+  network:
+    hostNetwork: false
+  storage:
+    storageClassDeviceSets:
+    - name: set1
+      count: 3
+      resources:
+        limits:
+          cpu: "500m"
+          memory: "4Gi"
+        requests:
+          cpu: "500m"
+          memory: "4Gi"
+      placement:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: "rook.io/cluster"
+                  operator: In
+                  values:
+                    - cluster1
+                topologyKey: "failure-domain.beta.kubernetes.io/zone"
+      volumeClaimTemplates:
+      - metadata:
+          name: data
+        spec:
+          resources:
+            requests:
+              storage: 10Gi
+          storageClassName: fast-disks
+          volumeMode: Block
+          accessModes:
+            - ReadWriteOnce
 ```
